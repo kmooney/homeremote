@@ -1,5 +1,6 @@
 import type { Command, Device, NavKey, TransportKey } from "./api";
 import { Inputs } from "./Inputs";
+import { HoldButton } from "./HoldButton";
 
 interface Props {
   volumeDevice: Device | null;
@@ -43,20 +44,20 @@ export function Remote({ volumeDevice, remoteDevice, inputDevice, onSend }: Prop
         </div>
 
         <div className="volume">
-          <button
+          <HoldButton
             aria-label="Volume down"
             disabled={!volumeDevice}
-            onClick={() => sendVolume({ volume: "down" })}
+            onPress={() => sendVolume({ volume: "down" })}
           >
             −
-          </button>
-          <button
+          </HoldButton>
+          <HoldButton
             aria-label="Volume up"
             disabled={!volumeDevice}
-            onClick={() => sendVolume({ volume: "up" })}
+            onPress={() => sendVolume({ volume: "up" })}
           >
             +
-          </button>
+          </HoldButton>
           <button
             className="mute"
             aria-pressed={muted}
@@ -77,15 +78,15 @@ export function Remote({ volumeDevice, remoteDevice, inputDevice, onSend }: Prop
 
         <div className="dpad">
           <span className="spacer" />
-          <button aria-label="Up" disabled={!remoteDevice} onClick={() => sendNav("up")}>▲</button>
+          <HoldButton aria-label="Up" disabled={!remoteDevice} onPress={() => sendNav("up")}>▲</HoldButton>
           <span className="spacer" />
 
-          <button aria-label="Left" disabled={!remoteDevice} onClick={() => sendNav("left")}>◀</button>
+          <HoldButton aria-label="Left" disabled={!remoteDevice} onPress={() => sendNav("left")}>◀</HoldButton>
           <button className="ok" disabled={!remoteDevice} onClick={() => sendNav("select")}>OK</button>
-          <button aria-label="Right" disabled={!remoteDevice} onClick={() => sendNav("right")}>▶</button>
+          <HoldButton aria-label="Right" disabled={!remoteDevice} onPress={() => sendNav("right")}>▶</HoldButton>
 
           <span className="spacer" />
-          <button aria-label="Down" disabled={!remoteDevice} onClick={() => sendNav("down")}>▼</button>
+          <HoldButton aria-label="Down" disabled={!remoteDevice} onPress={() => sendNav("down")}>▼</HoldButton>
           <span className="spacer" />
         </div>
 

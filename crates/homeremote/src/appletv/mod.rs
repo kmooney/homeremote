@@ -6,6 +6,8 @@
 //! it sits behind its own feature flag and is sequenced after the receiver and
 //! the TV.
 
+pub mod opack;
+
 use std::time::Duration;
 
 use crate::Result;
