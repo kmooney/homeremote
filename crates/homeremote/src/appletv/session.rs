@@ -47,7 +47,8 @@ impl HidCommand {
             NavKey::Left => Self::Left,
             NavKey::Right => Self::Right,
             NavKey::Select => Self::Select,
-            // The Apple TV has no separate back; Menu is the back button.
+            // tvOS has no separate back and menu — Menu *is* back. Both map
+            // here, so the remote only offers one of them.
             NavKey::Back | NavKey::Menu => Self::Menu,
             NavKey::Home => Self::Home,
         }

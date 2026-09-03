@@ -26,6 +26,12 @@ const EVENT_QUEUE: usize = 32;
 const RECONNECT_DELAY_MIN: Duration = Duration::from_secs(1);
 const RECONNECT_DELAY_MAX: Duration = Duration::from_secs(60);
 
+/// The Apple TV closes Companion sessions that have gone quiet, so a link left
+/// idle longer than this is replaced before it is used rather than after it
+/// fails. Well under the observed timeout, since a stale link costs a wasted
+/// round trip and a visible error.
+const IDLE_BEFORE_REFRESH: Duration = Duration::from_secs(20);
+
 struct Request {
     command: Command,
     ack: oneshot::Sender<Result<()>>,
@@ -135,6 +141,19 @@ async fn dispatch(link: &mut Link, command: &Command) -> Result<()> {
     }
 }
 
+/// Whether an error means the connection is gone, as opposed to the device
+/// declining the command.
+///
+/// [`Error::Unsupported`] is a decision, not a failure, and must not trigger a
+/// reconnect — otherwise asking the Apple TV for something it cannot do would
+/// tear down a perfectly good session.
+fn is_link_failure(result: &Result<()>) -> bool {
+    matches!(
+        result,
+        Err(Error::Io(_)) | Err(Error::Timeout) | Err(Error::Protocol(_)) | Err(Error::Unreachable(_))
+    )
+}
+
 async fn supervise(
     addr: IpAddr,
     port: Option<u16>,
@@ -151,17 +170,44 @@ async fn supervise(
                 tracing::info!(%addr, "Apple TV session established");
                 delay = RECONNECT_DELAY_MIN;
                 set_reachable(&state, &events, true);
+                let mut last_used = tokio::time::Instant::now();
 
-                // Serve commands until the link fails.
+                // Serve commands until the link fails in a way we can't hide.
                 while let Some(request) = commands.recv().await {
-                    let result = dispatch(&mut link, &request.command).await;
-                    let broke = matches!(
-                        result,
-                        Err(Error::Io(_)) | Err(Error::Timeout) | Err(Error::Protocol(_))
-                    );
+                    // Replace a link that has been sitting idle. The device has
+                    // very likely already dropped it, and finding that out by
+                    // failing would surface as a lost keypress.
+                    if last_used.elapsed() > IDLE_BEFORE_REFRESH {
+                        tracing::debug!(%addr, "refreshing an idle Apple TV session");
+                        match session::open_session(addr, port, &credentials).await {
+                            Ok(fresh) => link = fresh,
+                            Err(e) => {
+                                tracing::debug!(%addr, error = %e, "idle refresh failed");
+                            }
+                        }
+                    }
+
+                    let mut result = dispatch(&mut link, &request.command).await;
+
+                    // One transparent retry on a link-level failure: the device
+                    // reaps idle sessions, and a button press should not be lost
+                    // to that.
+                    if is_link_failure(&result) {
+                        tracing::debug!(%addr, "link failed; reconnecting and retrying once");
+                        match session::open_session(addr, port, &credentials).await {
+                            Ok(fresh) => {
+                                link = fresh;
+                                result = dispatch(&mut link, &request.command).await;
+                            }
+                            Err(e) => result = Err(e),
+                        }
+                    }
+
+                    let broke = is_link_failure(&result);
+                    last_used = tokio::time::Instant::now();
                     let _ = request.ack.send(result);
                     if broke {
-                        tracing::warn!(%addr, "Apple TV link failed; reconnecting");
+                        tracing::warn!(%addr, "Apple TV link failed after a retry");
                         break;
                     }
                 }

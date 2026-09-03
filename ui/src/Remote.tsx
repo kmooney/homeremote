@@ -90,10 +90,10 @@ export function Remote({ volumeDevice, remoteDevice, inputDevice, onSend }: Prop
           <span className="spacer" />
         </div>
 
+        {/* Back and Menu are the same tvOS command, so only one is shown. */}
         <div className="row" style={{ marginTop: 12 }}>
           <button disabled={!remoteDevice} onClick={() => sendNav("back")}>Back</button>
           <button disabled={!remoteDevice} onClick={() => sendNav("home")}>Home</button>
-          <button disabled={!remoteDevice} onClick={() => sendNav("menu")}>Menu</button>
         </div>
 
         <div className="row">
