@@ -138,6 +138,35 @@ impl Link {
         Ok(reply)
     }
 
+    /// Send a command without waiting for its reply.
+    ///
+    /// Lets a caller put several frames on the wire before collecting any
+    /// answers. The device replies in order, so replies are matched by
+    /// position rather than by transaction id.
+    pub async fn send_command(&mut self, identifier: &str, content: Value) -> Result<()> {
+        let xid = self.take_xid();
+        tracing::debug!(identifier, xid, "command -> (pipelined)");
+        let message = frame::request(identifier, xid, content);
+        self.send(FrameType::EOpack, &message).await
+    }
+
+    /// Send a one-way event, which the device does not answer.
+    pub async fn send_event(&mut self, identifier: &str, content: Value) -> Result<()> {
+        let xid = self.take_xid();
+        tracing::debug!(identifier, xid, "event ->");
+        let message = frame::event(identifier, xid, content);
+        self.send(FrameType::EOpack, &message).await
+    }
+
+    /// Collect one reply previously sent with [`Link::send_command`].
+    pub async fn await_reply(&mut self) -> Result<Value> {
+        let (_, reply) = self.receive().await?;
+        if let Some(error) = frame::error_message(&reply) {
+            return Err(Error::Protocol(format!("device rejected the request: {error}")));
+        }
+        Ok(reply.get("_c").cloned().unwrap_or(Value::Null))
+    }
+
     /// Send a `_i`/`_t`/`_c` command and return its content.
     pub async fn command(&mut self, identifier: &str, content: Value) -> Result<Value> {
         let xid = self.take_xid();

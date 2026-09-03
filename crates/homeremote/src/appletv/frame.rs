@@ -139,6 +139,16 @@ pub fn request(identifier: &str, xid: i64, content: Value) -> Value {
     Value::Dict(map)
 }
 
+/// Wrap a one-way notification, which the device does not reply to.
+pub fn event(identifier: &str, xid: i64, content: Value) -> Value {
+    let mut map = BTreeMap::new();
+    map.insert("_i".to_string(), Value::Str(identifier.to_string()));
+    map.insert("_t".to_string(), Value::Int(EVENT));
+    map.insert("_c".to_string(), content);
+    map.insert("_x".to_string(), Value::Int(xid));
+    Value::Dict(map)
+}
+
 /// Wrap pairing data, which uses `_pd` rather than the command envelope.
 pub fn pairing_message(pairing_data: Vec<u8>, extra: &[(&str, Value)]) -> Value {
     let mut map = BTreeMap::new();
@@ -208,6 +218,12 @@ mod tests {
         assert!(FrameType::PvNext.is_auth());
         assert!(FrameType::EOpack.is_opack() && !FrameType::EOpack.is_auth());
         assert!(!FrameType::SessionData.is_opack());
+    }
+
+    #[test]
+    fn an_event_is_marked_as_one() {
+        let message = event("_systemInfo", 3, Value::Null);
+        assert_eq!(message.get("_t").unwrap().as_int(), Some(EVENT));
     }
 
     #[test]

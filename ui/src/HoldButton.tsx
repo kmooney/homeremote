@@ -3,15 +3,21 @@ import { useCallback, useEffect, useRef, type ReactNode } from "react";
 /** How long to hold before the first repeat, so a tap stays a single press. */
 const DELAY_BEFORE_REPEAT = 400;
 
-/** Gap between repeats once they start. */
-const REPEAT_INTERVAL = 150;
+/**
+ * Gap between repeats once they start.
+ *
+ * Paced to what the devices can actually absorb: an Apple TV button press is
+ * two round trips, so repeating faster than this only builds a queue that
+ * plays out after the finger lifts.
+ */
+const REPEAT_INTERVAL = 180;
 
 /**
  * Repeats after this many, to close a long distance without a long wait.
  * The receiver moves in half steps, so plain repeat is slower than it looks.
  */
 const ACCELERATE_AFTER = 8;
-const FAST_INTERVAL = 70;
+const FAST_INTERVAL = 110;
 
 interface Props {
   onPress: () => void;

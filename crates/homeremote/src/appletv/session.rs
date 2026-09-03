@@ -199,12 +199,12 @@ pub async fn open_session(
     let (out_key, in_key) = verify.session_keys()?;
     link.enable_encryption(out_key, in_key);
 
-    // The device wants to know who it is talking to before it will take
-    // commands, and then a session has to be opened explicitly.
+    // Introduce ourselves as an event rather than a request. This device never
+    // answers _systemInfo, so asking and waiting cost the full I/O timeout on
+    // every reconnect — which surfaced as the remote freezing for seconds and
+    // then firing every queued press at once.
     let client_id = String::from_utf8_lossy(&credentials.client_id).to_string();
-    // Introducing ourselves is courtesy, not a requirement: some firmware
-    // ignores it entirely. Don't let it block the session.
-    let system_info = link.command(
+    link.send_event(
         "_systemInfo",
         dict([
             ("_bf", Value::Int(0)),
@@ -219,10 +219,7 @@ pub async fn open_session(
             ("name", Value::from("Home Remote")),
         ]),
     )
-    .await;
-    if let Err(e) = system_info {
-        tracing::debug!(error = %e, "_systemInfo was not answered; continuing");
-    }
+    .await?;
 
     let local_sid: i64 = i64::from(rand::random::<u32>());
     link.command(
@@ -241,13 +238,20 @@ pub async fn open_session(
 ///
 /// A press is two HID events; sending only the down event leaves the Apple TV
 /// believing the button is still held.
+///
+/// Both frames go out before either reply is collected. Waiting for the first
+/// answer before sending the second doubles the cost of every press, which is
+/// what a held button runs into first.
 pub async fn press(link: &mut Link, command: HidCommand) -> Result<()> {
     for state in [1i64, 2] {
-        link.command(
+        link.send_command(
             "_hidC",
             dict([("_hBtS", Value::Int(state)), ("_hidC", Value::Int(command as i64))]),
         )
         .await?;
+    }
+    for _ in 0..2 {
+        link.await_reply().await?;
     }
     Ok(())
 }

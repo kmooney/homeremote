@@ -34,8 +34,18 @@ const IDLE_BEFORE_REFRESH: Duration = Duration::from_secs(20);
 
 struct Request {
     command: Command,
+    /// When the caller queued this, so a backlog can be shed rather than
+    /// played out late.
+    queued_at: tokio::time::Instant,
     ack: oneshot::Sender<Result<()>>,
 }
+
+/// A command still waiting this long has been overtaken by events.
+///
+/// A held button can out-pace the device, and replaying the backlog after
+/// someone lets go is worse than dropping it — the cursor would keep moving on
+/// its own. Dropping loses a little scroll distance and stays responsive.
+const STALE_AFTER: Duration = Duration::from_millis(500);
 
 pub struct AppleTv {
     id: DeviceId,
@@ -103,7 +113,11 @@ impl Device for AppleTv {
     async fn send(&self, command: Command) -> Result<()> {
         let (ack, acked) = oneshot::channel();
         self.commands
-            .try_send(Request { command, ack })
+            .try_send(Request {
+                command,
+                queued_at: tokio::time::Instant::now(),
+                ack,
+            })
             .map_err(|_| Error::Unreachable(self.addr))?;
         acked.await.map_err(|_| Error::Unreachable(self.addr))?
     }
@@ -173,18 +187,35 @@ async fn supervise(
                 let mut last_used = tokio::time::Instant::now();
 
                 // Serve commands until the link fails in a way we can't hide.
-                while let Some(request) = commands.recv().await {
-                    // Replace a link that has been sitting idle. The device has
-                    // very likely already dropped it, and finding that out by
-                    // failing would surface as a lost keypress.
-                    if last_used.elapsed() > IDLE_BEFORE_REFRESH {
-                        tracing::debug!(%addr, "refreshing an idle Apple TV session");
-                        match session::open_session(addr, port, &credentials).await {
-                            Ok(fresh) => link = fresh,
-                            Err(e) => {
-                                tracing::debug!(%addr, error = %e, "idle refresh failed");
+                loop {
+                    let request = tokio::select! {
+                        // Keep the session warm *between* presses. Refreshing
+                        // when a press arrives would put the reconnect on the
+                        // critical path, which is what made the remote appear
+                        // to freeze and then fire everything at once.
+                        _ = tokio::time::sleep_until(last_used + IDLE_BEFORE_REFRESH) => {
+                            tracing::debug!(%addr, "refreshing an idle Apple TV session");
+                            match session::open_session(addr, port, &credentials).await {
+                                Ok(fresh) => link = fresh,
+                                Err(e) => tracing::debug!(%addr, error = %e, "idle refresh failed"),
                             }
+                            last_used = tokio::time::Instant::now();
+                            continue;
                         }
+                        request = commands.recv() => match request {
+                            Some(request) => request,
+                            None => break,
+                        },
+                    };
+
+                    // Shed a backlog rather than playing it out seconds late.
+                    if request.queued_at.elapsed() > STALE_AFTER {
+                        tracing::debug!(
+                            command = request.command.describe(),
+                            "dropping a command overtaken by newer input"
+                        );
+                        let _ = request.ack.send(Ok(()));
+                        continue;
                     }
 
                     let mut result = dispatch(&mut link, &request.command).await;
