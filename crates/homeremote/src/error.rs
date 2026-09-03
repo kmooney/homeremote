@@ -12,6 +12,10 @@ pub enum Error {
     #[error("{0} control is not implemented yet")]
     NotImplemented(&'static str),
 
+    /// The device is reachable but offers nothing to control it with.
+    #[error("no IP control available — {0}")]
+    NoIpControl(&'static str),
+
     #[error("device is not paired; run pairing first")]
     NotPaired,
 

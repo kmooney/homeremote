@@ -49,23 +49,34 @@ not, so pairing credentials will survive.
 
 ### Samsung UN55J6203 — no IP control available
 
-This set does not expose a remote-control API over IP. Verified while the TV was
-on and answering DIAL and UPnP:
+A full scan of all 65535 ports, with the TV awake and answering, found exactly
+three open:
 
-| Port | Purpose | State |
-|------|---------|-------|
-| 8001 / 8002 | Tizen websocket remote | closed |
-| 55000 | legacy Samsung remote | closed |
-| 7676 | UPnP (DLNA, DIAL, RenderingControl) | open |
-| 8080 | DIAL app launching | open |
+| Port | Service | Useful? |
+|------|---------|---------|
+| 7676 | UPnP: DLNA, RenderingControl, AVTransport | volume/mute only, which the Denon already owns |
+| 8080 | DIAL | launches apps like YouTube and Netflix |
+| 7011 | Orsay Remote Web Inspector | bound, but resets on every HTTP request |
 
-Its `RemoteControlReceiver` UPnP device advertises only `MultiScreenService`
-(app launching) — there is no key-input service to call. What *is* reachable:
-launching apps over DIAL, and volume/mute over `RenderingControl`, neither of
-which helps here since the Denon handles audio.
+There is no key input, no input switching, and no power control.
 
-In standby the TV leaves the network entirely — no ping, no open ports — so
-Wake-on-LAN and every IP route are out. The remaining lever is HDMI-CEC.
+The giveaway is port 7011: that is the **Orsay** Remote Web Inspector, so this
+is a pre-Tizen set. Tizen's remote-control endpoints (`8002`, `/api/v2/`) were
+never going to exist here — Orsay used port 55000 on older models and
+`8001` + `/ms/1.0/` on 2014-15 ones, and neither is listening.
+
+Two details worth recording, because they look like leads and are not:
+
+- The TV **advertises** a MultiScreen API on port 8001 in its own UPnP
+  capability list, but connecting there is *refused* — the service is
+  advertised and not running. A cold boot is the usual remedy; it has not been
+  tried here.
+- Its `RemoteControlReceiver` UPnP device sounds like the answer but exposes
+  only `MultiScreenService`, which launches apps. There is no key-input
+  service behind it.
+
+In standby the TV leaves the network completely — no ping, no open ports — so
+every IP route is closed then too.
 
 ### HDMI-CEC, for TV power and input
 

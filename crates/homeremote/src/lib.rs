@@ -68,7 +68,12 @@ pub fn open(device: &config::DeviceConfig) -> Result<std::sync::Arc<dyn Device>>
         Vendor::Denon => Ok(std::sync::Arc::new(denon::DenonReceiver::connect(&found))),
         #[cfg(not(feature = "denon"))]
         Vendor::Denon => Err(Error::NotImplemented("Denon")),
-        Vendor::Samsung => Err(Error::NotImplemented("Samsung")),
+        // A full 65535-port scan of the UN55J6203 found only DLNA/UPnP,
+        // DIAL app launching, and one undocumented binary service. It
+        // advertises a MultiScreen API on 8001, but nothing listens there.
+        Vendor::Samsung => Err(Error::NoIpControl(
+            "this TV serves only DLNA and app launching; power and input need HDMI-CEC",
+        )),
         #[cfg(feature = "appletv")]
         Vendor::AppleTv => {
             let credentials = appletv_credentials(device)?;
