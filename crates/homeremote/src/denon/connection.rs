@@ -526,8 +526,7 @@ mod tests {
         for line in SOURCE_REPLIES {
             apply(line, &events, &inner);
         }
-        let options = inner.lock().unwrap().sources.options();
-        options
+        inner.lock().unwrap().sources.options()
     }
 
     #[test]
