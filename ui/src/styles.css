@@ -129,6 +129,15 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   border-color: var(--accent);
 }
 
+/* Inputs: two columns, so long labels like "DVD/Blu-ray" still fit. */
+.inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.input { min-height: 56px; font-size: 15px; font-weight: 500; padding: 0 10px; }
+.input[aria-current="true"] {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
 /* D-pad: a 3x3 grid with the arrows on the cross and OK in the middle. */
 .dpad {
   display: grid;

@@ -32,6 +32,13 @@ export interface DeviceState {
   input: string | null;
 }
 
+export interface InputOption {
+  /** What goes on the wire, e.g. "MPLAY". */
+  code: string;
+  /** What the owner named it on the device itself, e.g. "Cameras". */
+  label: string;
+}
+
 export interface Device {
   id: string;
   name: string;
@@ -40,6 +47,7 @@ export interface Device {
   addr: string | null;
   capabilities: Capabilities | null;
   unavailableBecause: string | null;
+  inputs: InputOption[];
   state: DeviceState;
 }
 

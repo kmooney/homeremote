@@ -154,6 +154,16 @@ pub struct TaggedEvent {
     pub event: DeviceEvent,
 }
 
+/// A selectable source on a device.
+///
+/// `code` is what goes on the wire; `label` is what the owner has named it on
+/// the device itself, which is what should appear in the remote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputOption {
+    pub code: String,
+    pub label: String,
+}
+
 #[async_trait::async_trait]
 pub trait Device: Send + Sync {
     fn id(&self) -> &DeviceId;
@@ -163,6 +173,14 @@ pub trait Device: Send + Sync {
 
     async fn send(&self, cmd: Command) -> Result<()>;
     async fn state(&self) -> DeviceState;
+
+    /// Selectable inputs, in the order the device lists them.
+    ///
+    /// Empty until the device has told us, so callers must cope with not
+    /// knowing yet rather than treating empty as "has no inputs".
+    async fn inputs(&self) -> Vec<InputOption> {
+        Vec::new()
+    }
 
     /// Subscribe to state pushed by the device.
     fn subscribe(&self) -> broadcast::Receiver<DeviceEvent>;

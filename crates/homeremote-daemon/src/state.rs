@@ -58,9 +58,9 @@ pub struct ManagedDevice {
 
 impl ManagedDevice {
     pub async fn snapshot(&self) -> DeviceSnapshot {
-        let state = match &self.device {
-            Some(device) => device.state().await,
-            None => DeviceState::default(),
+        let (state, inputs) = match &self.device {
+            Some(device) => (device.state().await, device.inputs().await),
+            None => (DeviceState::default(), Vec::new()),
         };
         DeviceSnapshot {
             id: self.config.id.clone(),
@@ -70,6 +70,7 @@ impl ManagedDevice {
             addr: self.config.addr.map(|a| a.to_string()),
             capabilities: self.device.as_ref().map(|d| d.capabilities()),
             unavailable_because: self.unavailable_because.clone(),
+            inputs,
             state,
         }
     }
@@ -86,6 +87,8 @@ pub struct DeviceSnapshot {
     pub addr: Option<String>,
     pub capabilities: Option<homeremote::device::Capabilities>,
     pub unavailable_because: Option<String>,
+    /// Selectable sources, named as the owner has them on the device.
+    pub inputs: Vec<homeremote::device::InputOption>,
     pub state: DeviceState,
 }
 

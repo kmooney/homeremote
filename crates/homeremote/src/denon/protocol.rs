@@ -34,6 +34,12 @@ pub enum Response {
     Muted(bool),
     Power(bool),
     Input(String),
+    /// A source's label, from `SSFUN ?`. Labels are user-editable on the
+    /// receiver, so this is the name that actually appears on its display.
+    InputName { code: String, label: String },
+    /// Whether a source is enabled, from `SSSOD ?`. Disabled sources are hidden
+    /// on the receiver and should be hidden in the remote too.
+    InputEnabled { code: String, enabled: bool },
     /// Understood but not acted on, e.g. `SVOFF`.
     Other(String),
 }
@@ -80,11 +86,43 @@ pub fn parse_response(line: &str) -> Option<Response> {
             _ => Some(Response::Other(line.to_string())),
         };
     }
+    // Source setup replies. These must be tested before the bare `SI` prefix
+    // below, though they don't actually collide, and before falling through.
+    if let Some(rest) = line.strip_prefix("SSFUN") {
+        return Some(parse_source_setup(rest).map_or_else(
+            || Response::Other(line.to_string()),
+            |(code, label)| Response::InputName { code, label },
+        ));
+    }
+    if let Some(rest) = line.strip_prefix("SSSOD") {
+        return Some(parse_source_setup(rest).map_or_else(
+            || Response::Other(line.to_string()),
+            |(code, status)| Response::InputEnabled {
+                code,
+                enabled: status.eq_ignore_ascii_case("USE"),
+            },
+        ));
+    }
     // `SV` is video-select, which shares the `S` prefix but is not an input.
     if let Some(rest) = line.strip_prefix("SI") {
         return Some(Response::Input(rest.to_string()));
     }
     Some(Response::Other(line.to_string()))
+}
+
+/// Split a source-setup payload into its code and value.
+///
+/// The code runs up to the first space and may itself contain a slash, as in
+/// `SAT/CBL CBL/SAT` — code `SAT/CBL`, label `CBL/SAT`. Splitting anywhere but
+/// the first space gets those wrong.
+fn parse_source_setup(rest: &str) -> Option<(String, String)> {
+    let (code, value) = rest.split_once(' ')?;
+    let (code, value) = (code.trim(), value.trim());
+    // `SSFUN END` terminates the listing rather than describing a source.
+    if code.is_empty() || value.is_empty() || code.eq_ignore_ascii_case("END") {
+        return None;
+    }
+    Some((code.to_string(), value.to_string()))
 }
 
 /// Parse the digits after `MV` into receiver units.
@@ -181,7 +219,35 @@ pub fn encode(command: &Command, max_volume: f32) -> Result<Vec<String>> {
 }
 
 /// The queries that establish full state on connect.
-pub const STATE_QUERIES: [&str; 5] = ["PW?", "ZM?", "MV?", "MU?", "SI?"];
+///
+/// `SSFUN ?` and `SSSOD ?` enumerate the sources: which exist, what the owner
+/// has renamed them to, and which are enabled. Without them the remote would
+/// have to hard-code a guess at the input list.
+pub const STATE_QUERIES: [&str; 7] = [
+    "PW?", "ZM?", "MV?", "MU?", "SI?", "SSFUN ?", "SSSOD ?",
+];
+
+/// Friendly names for sources that `SSFUN ?` does not describe — the network
+/// and tuner sources, which cannot be renamed on the receiver.
+pub fn default_input_label(code: &str) -> &str {
+    match code {
+        "TUNER" => "Tuner",
+        "BT" => "Bluetooth",
+        "NET" => "HEOS Music",
+        "USB/IPOD" => "USB / iPod",
+        "USB" => "USB",
+        "IPOD" => "iPod",
+        "FAVORITES" => "Favourites",
+        "IRADIO" => "Internet Radio",
+        "SERVER" => "Media Server",
+        "PANDORA" => "Pandora",
+        "SIRIUSXM" => "SiriusXM",
+        "SPOTIFY" => "Spotify",
+        "PHONO" => "Phono",
+        "CD" => "CD",
+        other => other,
+    }
+}
 
 /// Ignored by the [`Command::Nav`] arm above, listed so an exhaustive match on
 /// the shared vocabulary stays honest if new keys are added.
@@ -224,6 +290,84 @@ mod tests {
         assert_eq!(parse_response("MUOFF"), Some(Response::Muted(false)));
         assert_eq!(parse_response("SIBD"), Some(Response::Input("BD".into())));
         assert_eq!(parse_response("SIMPLAY"), Some(Response::Input("MPLAY".into())));
+    }
+
+    #[test]
+    fn parses_renamed_source_labels() {
+        // Captured from the AVR-S720W: this unit has MPLAY renamed "Cameras".
+        assert_eq!(
+            parse_response("SSFUNMPLAY Cameras     "),
+            Some(Response::InputName {
+                code: "MPLAY".into(),
+                label: "Cameras".into()
+            })
+        );
+        assert_eq!(
+            parse_response("SSFUNBD Blu-ray     "),
+            Some(Response::InputName {
+                code: "BD".into(),
+                label: "Blu-ray".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_source_code_may_contain_a_slash() {
+        // `SSFUNSAT/CBL CBL/SAT` splits at the FIRST space, not the slash.
+        assert_eq!(
+            parse_response("SSFUNSAT/CBL CBL/SAT     "),
+            Some(Response::InputName {
+                code: "SAT/CBL".into(),
+                label: "CBL/SAT".into()
+            })
+        );
+        assert_eq!(
+            parse_response("SSSODUSB/IPOD USE"),
+            Some(Response::InputEnabled {
+                code: "USB/IPOD".into(),
+                enabled: true
+            })
+        );
+    }
+
+    #[test]
+    fn parses_source_enablement() {
+        assert_eq!(
+            parse_response("SSSODDVD USE"),
+            Some(Response::InputEnabled {
+                code: "DVD".into(),
+                enabled: true
+            })
+        );
+        assert_eq!(
+            parse_response("SSSODCD DEL"),
+            Some(Response::InputEnabled {
+                code: "CD".into(),
+                enabled: false
+            })
+        );
+    }
+
+    #[test]
+    fn source_listing_terminators_are_not_sources() {
+        assert_eq!(
+            parse_response("SSFUN END"),
+            Some(Response::Other("SSFUN END".into()))
+        );
+        assert_eq!(
+            parse_response("SSSOD END"),
+            Some(Response::Other("SSSOD END".into()))
+        );
+    }
+
+    #[test]
+    fn network_sources_get_readable_default_labels() {
+        // These never appear in SSFUN, so without a default the UI would show
+        // raw protocol codes.
+        assert_eq!(default_input_label("BT"), "Bluetooth");
+        assert_eq!(default_input_label("USB/IPOD"), "USB / iPod");
+        // An unknown code is shown as-is rather than hidden.
+        assert_eq!(default_input_label("WEIRD"), "WEIRD");
     }
 
     #[test]

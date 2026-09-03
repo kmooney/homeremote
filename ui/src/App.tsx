@@ -126,6 +126,12 @@ export function App() {
     );
   }, [devices, activeActivity]);
 
+  /** Which device's inputs the remote offers — the receiver. */
+  const inputDevice = useMemo(
+    () => devices.find((d) => d.capabilities?.input) ?? null,
+    [devices],
+  );
+
   /** Where navigation and transport keys go. */
   const remoteDevice = useMemo(() => {
     const named = activeActivity?.remote_device;
@@ -159,6 +165,7 @@ export function App() {
           <Remote
             volumeDevice={volumeDevice}
             remoteDevice={remoteDevice}
+            inputDevice={inputDevice}
             onSend={send}
           />
         )}

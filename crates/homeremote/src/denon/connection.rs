@@ -9,6 +9,7 @@
 //! volunteers every state change on it, including ones made with the physical
 //! remote. That stream is what keeps the UI's volume from drifting.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,8 +21,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::denon::CONTROL_PORT;
 use crate::denon::protocol::{self, DEFAULT_MAX_VOLUME, Response, STATE_QUERIES, TERMINATOR};
 use crate::device::{
-    Capabilities, Command, Device, DeviceEvent, DeviceId, DeviceKind, DeviceState, PowerState,
-    VolumeCmd,
+    Capabilities, Command, Device, DeviceEvent, DeviceId, DeviceKind, DeviceState, InputOption,
+    PowerState, VolumeCmd,
 };
 use crate::discovery::Discovered;
 use crate::{Error, Result};
@@ -47,11 +48,46 @@ struct Request {
     ack: oneshot::Sender<Result<()>>,
 }
 
+#[derive(Debug, Default)]
+struct Sources {
+    /// Owner-assigned labels from `SSFUN ?`, e.g. MPLAY -> "Cameras".
+    labels: HashMap<String, String>,
+    /// Codes reported enabled by `SSSOD ?`, in the order the receiver listed
+    /// them — that order matches its own on-screen menu.
+    enabled: Vec<String>,
+}
+
+impl Sources {
+    /// Compose the list the remote should show.
+    ///
+    /// Physical inputs — the ones `SSFUN ?` names — come first, since those are
+    /// what anyone is actually reaching for. Tuner and streaming sources follow.
+    fn options(&self) -> Vec<InputOption> {
+        let mut named = Vec::new();
+        let mut rest = Vec::new();
+        for code in &self.enabled {
+            match self.labels.get(code) {
+                Some(label) => named.push(InputOption {
+                    code: code.clone(),
+                    label: label.clone(),
+                }),
+                None => rest.push(InputOption {
+                    code: code.clone(),
+                    label: protocol::default_input_label(code).to_string(),
+                }),
+            }
+        }
+        named.extend(rest);
+        named
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
     state: DeviceState,
     /// Updated if the receiver ever volunteers `MVMAX`. The AVR-S720W does not.
     max_volume: f32,
+    sources: Sources,
 }
 
 /// A Denon receiver, controlled over its telnet port.
@@ -76,6 +112,7 @@ impl DenonReceiver {
         let inner = Arc::new(Mutex::new(Inner {
             state: DeviceState::default(),
             max_volume: DEFAULT_MAX_VOLUME,
+            sources: Sources::default(),
         }));
 
         let receiver = Self {
@@ -162,6 +199,10 @@ impl Device for DenonReceiver {
         self.inner.lock().unwrap().state.clone()
     }
 
+    async fn inputs(&self) -> Vec<InputOption> {
+        self.inner.lock().unwrap().sources.options()
+    }
+
     fn subscribe(&self) -> broadcast::Receiver<DeviceEvent> {
         self.events.subscribe()
     }
@@ -200,9 +241,10 @@ async fn supervise(
                 if e.kind() == std::io::ErrorKind::ConnectionRefused {
                     tracing::warn!(
                         %addr,
-                        "receiver refused the connection — another client (an old \
-                         Harmony hub, Home Assistant) may be holding its single \
-                         control socket"
+                        "receiver refused the connection — it allows only one at a \
+                         time, and something already has it. Usually that is a \
+                         `homeremote serve` already running; it can also be an old \
+                         Harmony hub or Home Assistant."
                     );
                 } else {
                     tracing::debug!(%addr, error = %e, "could not reach the receiver");
@@ -331,6 +373,17 @@ fn apply(line: &str, events: &broadcast::Sender<DeviceEvent>, inner: &Arc<Mutex<
                 guard.state.input = Some(input.clone());
                 Some(DeviceEvent::Input(input))
             }
+            Response::InputName { code, label } => {
+                guard.sources.labels.insert(code, label);
+                None
+            }
+            Response::InputEnabled { code, enabled } => {
+                guard.sources.enabled.retain(|c| c != &code);
+                if enabled {
+                    guard.sources.enabled.push(code);
+                }
+                None
+            }
             Response::Other(_) => None,
         }
     };
@@ -391,6 +444,7 @@ mod tests {
             Arc::new(Mutex::new(Inner {
                 state: DeviceState::default(),
                 max_volume: DEFAULT_MAX_VOLUME,
+                sources: Sources::default(),
             })),
             events,
         )
@@ -444,6 +498,100 @@ mod tests {
             subscriber.recv().await.unwrap(),
             DeviceEvent::Volume(_)
         ));
+    }
+
+    /// The exact reply set captured from the AVR-S720W.
+    const SOURCE_REPLIES: &[&str] = &[
+        "SSFUNDVD DVD/Blu-ray ",
+        "SSFUNBD Blu-ray     ",
+        "SSFUNTV TV Audio    ",
+        "SSFUNSAT/CBL CBL/SAT     ",
+        "SSFUNMPLAY Cameras     ",
+        "SSFUNGAME Game        ",
+        "SSFUNAUX1 AUX         ",
+        "SSSODDVD USE",
+        "SSSODBD USE",
+        "SSSODTV USE",
+        "SSSODSAT/CBL USE",
+        "SSSODMPLAY USE",
+        "SSSODBT USE",
+        "SSSODGAME USE",
+        "SSSODAUX1 USE",
+        "SSSODTUNER USE",
+        "SSSODUSB/IPOD USE",
+    ];
+
+    fn sources_from_replies() -> Vec<crate::device::InputOption> {
+        let (inner, events) = shared();
+        for line in SOURCE_REPLIES {
+            apply(line, &events, &inner);
+        }
+        let options = inner.lock().unwrap().sources.options();
+        options
+    }
+
+    #[test]
+    fn inputs_use_the_names_set_on_the_receiver() {
+        // This unit has MPLAY renamed "Cameras". Showing "MPLAY" instead would
+        // mean the remote disagrees with the receiver's own display.
+        let options = sources_from_replies();
+        let cameras = options.iter().find(|o| o.code == "MPLAY").unwrap();
+        assert_eq!(cameras.label, "Cameras");
+    }
+
+    #[test]
+    fn physical_inputs_are_listed_before_streaming_sources() {
+        // Someone reaching for the remote wants HDMI, not Bluetooth.
+        let options = sources_from_replies();
+        let position = |code: &str| options.iter().position(|o| o.code == code).unwrap();
+        assert!(position("MPLAY") < position("BT"));
+        assert!(position("SAT/CBL") < position("TUNER"));
+    }
+
+    #[test]
+    fn sources_without_a_custom_name_still_read_well() {
+        let options = sources_from_replies();
+        let bluetooth = options.iter().find(|o| o.code == "BT").unwrap();
+        assert_eq!(bluetooth.label, "Bluetooth");
+        let ipod = options.iter().find(|o| o.code == "USB/IPOD").unwrap();
+        assert_eq!(ipod.label, "USB / iPod");
+    }
+
+    #[test]
+    fn disabled_sources_are_hidden() {
+        let (inner, events) = shared();
+        apply("SSSODCD USE", &events, &inner);
+        apply("SSSODBD USE", &events, &inner);
+        // The owner has since deleted CD on the receiver.
+        apply("SSSODCD DEL", &events, &inner);
+
+        let options = inner.lock().unwrap().sources.options();
+        assert!(options.iter().all(|o| o.code != "CD"));
+        assert!(options.iter().any(|o| o.code == "BD"));
+    }
+
+    #[test]
+    fn re_querying_does_not_duplicate_inputs() {
+        // Every reconnect re-runs the source queries.
+        let (inner, events) = shared();
+        for _ in 0..3 {
+            for line in SOURCE_REPLIES {
+                apply(line, &events, &inner);
+            }
+        }
+        let options = inner.lock().unwrap().sources.options();
+        let mut codes: Vec<&str> = options.iter().map(|o| o.code.as_str()).collect();
+        let total = codes.len();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), total, "input list must not accumulate duplicates");
+    }
+
+    #[test]
+    fn the_input_list_is_empty_until_the_receiver_answers() {
+        // Callers must be able to tell "not known yet" from "has no inputs".
+        let (inner, _events) = shared();
+        assert!(inner.lock().unwrap().sources.options().is_empty());
     }
 
     #[test]

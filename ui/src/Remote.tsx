@@ -1,12 +1,14 @@
 import type { Command, Device, NavKey, TransportKey } from "./api";
+import { Inputs } from "./Inputs";
 
 interface Props {
   volumeDevice: Device | null;
   remoteDevice: Device | null;
+  inputDevice: Device | null;
   onSend: (deviceId: string, command: Command) => void;
 }
 
-export function Remote({ volumeDevice, remoteDevice, onSend }: Props) {
+export function Remote({ volumeDevice, remoteDevice, inputDevice, onSend }: Props) {
   const volume = volumeDevice?.state.volume;
   const muted = volumeDevice?.state.muted ?? false;
 
@@ -22,6 +24,8 @@ export function Remote({ volumeDevice, remoteDevice, onSend }: Props) {
 
   return (
     <>
+      <Inputs device={inputDevice} onSend={onSend} />
+
       <div className="card">
         <h2>{volumeDevice ? `Volume — ${volumeDevice.name}` : "Volume"}</h2>
 
