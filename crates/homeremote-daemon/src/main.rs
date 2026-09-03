@@ -125,23 +125,37 @@ async fn serve(config_path: &std::path::Path, port: Option<u16>, no_scan: bool) 
     let state = state::AppState::new(config_path.to_path_buf(), config);
     state.open_devices().await;
 
-    for snapshot in state.snapshots().await {
+    // Say plainly which devices the remote can drive. Listing the others with
+    // a bare reason reads like a startup failure, when in fact the remote is
+    // perfectly usable with whatever is ready.
+    let snapshots = state.snapshots().await;
+    let ready = snapshots
+        .iter()
+        .filter(|s| s.unavailable_because.is_none())
+        .count();
+
+    eprintln!("\nDevices ({ready} of {} controllable):", snapshots.len());
+    for snapshot in &snapshots {
         match &snapshot.unavailable_because {
-            Some(reason) => eprintln!("  {:<24} {}", snapshot.name, reason),
-            None => eprintln!("  {:<24} ready", snapshot.name),
+            Some(reason) => eprintln!("  - {:<22} not controllable — {reason}", snapshot.name),
+            None => eprintln!("  * {:<22} ready", snapshot.name),
         }
+    }
+    if ready == 0 {
+        eprintln!("\nNothing is controllable yet. Check the devices are powered on and");
+        eprintln!("on this network, then run `homeremote discover` to re-scan.");
     }
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .with_context(|| format!("could not listen on port {port}"))?;
 
-    eprintln!("\nRemote ready:");
+    eprintln!("\nOpen the remote at:");
     for addr in homeremote::discovery::local_ipv4_interfaces() {
-        eprintln!("  http://{addr}:{port}");
+        eprintln!("  http://{addr}:{port}      <- from a phone on this network");
     }
-    eprintln!("  http://localhost:{port}");
-    eprintln!("\nOpen one of these on a phone or laptop on the same network.");
+    eprintln!("  http://localhost:{port}     <- from this machine");
+    eprintln!("\nPress Ctrl-C to stop.");
 
     axum::serve(listener, api::router(state))
         .with_graceful_shutdown(shutdown_signal())
