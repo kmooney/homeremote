@@ -82,6 +82,14 @@ enum Commands {
         #[arg(long)]
         no_scan: bool,
     },
+    /// Pair with a device that needs it.
+    ///
+    /// The Apple TV shows a four-digit PIN on screen; type it in when asked.
+    #[command(verbatim_doc_comment)]
+    Pair {
+        /// Device id, name, or vendor.
+        device: String,
+    },
     /// Show the resolved config path and what's in it.
     Config,
 }
@@ -103,6 +111,7 @@ async fn main() -> Result<()> {
         Commands::Send { device, command } => send(&config_path, &device, &command).await,
         Commands::Watch { device, seconds } => watch(&config_path, &device, seconds).await,
         Commands::Serve { port, no_scan } => serve(&config_path, port, no_scan).await,
+        Commands::Pair { device } => pair(&config_path, &device).await,
         Commands::Config => show_config(&config_path),
     }
 }
@@ -319,6 +328,54 @@ async fn discover(config_path: &std::path::Path, timeout: Duration, save: bool) 
             .with_context(|| format!("saving {}", config_path.display()))?;
         println!("Saved to {}", config_path.display());
     }
+    Ok(())
+}
+
+/// Walk someone through pairing, reading the PIN from the terminal.
+async fn pair(config_path: &std::path::Path, needle: &str) -> Result<()> {
+    use std::io::Write;
+
+    let mut config = Config::load(config_path)?;
+    let entry = cli::resolve(&config, needle)?.clone();
+
+    if entry.vendor != homeremote::discovery::Vendor::AppleTv {
+        bail!(
+            "{} does not need pairing — only the Apple TV does",
+            entry.name
+        );
+    }
+    let addr = entry
+        .addr
+        .context("no address known for that device; run `homeremote discover --save`")?;
+
+    println!("Pairing with {}...", entry.name);
+    let pending = homeremote::appletv::session::begin_pairing(addr, entry.port)
+        .await
+        .context("could not start pairing")?;
+
+    print!("Enter the PIN shown on the Apple TV: ");
+    std::io::stdout().flush()?;
+    let mut pin = String::new();
+    std::io::stdin().read_line(&mut pin)?;
+
+    let credentials = pending
+        .finish(pin.trim())
+        .await
+        .context("pairing failed")?;
+
+    let (device_public, client_private, device_id, client_id) = credentials.to_hex();
+    let stored = config
+        .device_mut(&entry.id)
+        .context("device vanished from the config")?;
+    stored.credentials = Some(homeremote::config::Credentials::AppleTv {
+        device_public,
+        client_private,
+        device_id,
+        client_id,
+    });
+    config.save(config_path)?;
+
+    println!("Paired. Credentials saved to {}", config_path.display());
     Ok(())
 }
 

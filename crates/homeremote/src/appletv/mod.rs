@@ -6,9 +6,22 @@
 //! it sits behind its own feature flag and is sequenced after the receiver and
 //! the TV.
 
+pub mod crypto;
+pub mod frame;
+pub mod link;
+pub mod session;
+
+mod device;
+pub use device::AppleTv;
+pub mod pairing;
 pub mod opack;
+pub mod tlv8;
 
 use std::time::Duration;
+
+/// Fallback Companion port, used when mDNS has not told us the real one. The
+/// Apple TV picks a fresh port on each boot, so this is only a last resort.
+pub const DEFAULT_PORT: u16 = 49152;
 
 use crate::Result;
 use crate::device::DeviceId;
@@ -65,6 +78,7 @@ pub async fn discover(timeout: Duration) -> Result<Vec<Discovered>> {
             name: service.instance.clone(),
             model,
             addr,
+            port: Some(service.port),
             mac: airplay_peer
                 .and_then(|a| a.txt("deviceid"))
                 .and_then(|d| d.parse::<MacAddr>().ok()),

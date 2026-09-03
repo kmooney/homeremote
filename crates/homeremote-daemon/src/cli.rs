@@ -146,6 +146,7 @@ mod tests {
             vendor,
             name: name.into(),
             addr: None,
+            port: None,
             mac: None,
             credentials: None,
         };

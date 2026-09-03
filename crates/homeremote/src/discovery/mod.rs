@@ -43,6 +43,10 @@ pub struct Discovered {
     pub name: String,
     pub model: Option<String>,
     pub addr: IpAddr,
+    /// Control port, when the device advertises one rather than using a fixed
+    /// port. The Apple TV picks a fresh Companion port on each boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     /// Needed to wake the Samsung from standby, where it stops answering IP.
     pub mac: Option<MacAddr>,
 }

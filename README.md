@@ -62,12 +62,54 @@ on and answering DIAL and UPnP:
 Its `RemoteControlReceiver` UPnP device advertises only `MultiScreenService`
 (app launching) — there is no key-input service to call. What *is* reachable:
 launching apps over DIAL, and volume/mute over `RenderingControl`, neither of
-which is useful here since the Denon handles audio.
+which helps here since the Denon handles audio.
 
-**The practical answer is HDMI-CEC.** With HDMI Control enabled on the receiver,
-powering it on and switching its input drives the TV's power and input for you.
-The TV appears in the UI marked unavailable so it is clear this is known, not
-broken.
+In standby the TV leaves the network entirely — no ping, no open ports — so
+Wake-on-LAN and every IP route are out. The remaining lever is HDMI-CEC.
+
+### HDMI-CEC, for TV power and input
+
+The receiver ships with HDMI Control **off**. Its current setup reads:
+
+```
+SSHOSCON     ON     HDMI Control          (was OFF; now enabled)
+SSHOSCONPOF  ALL    Power Off Control     receiver off -> connected devices off
+SSHOSCONSTS  LAS    Standby Source        last used
+SSHOSCONARC  OFF    Audio Return Channel
+SSHOSPAS     ON     HDMI Pass Through
+SSHOSTAS     OFF    TV Audio Switching
+```
+
+Two things worth knowing:
+
+- **The receiver only accepts these settings while it is powered on.** Sending
+  `SSHOSCON ON` in standby is accepted silently and does nothing, which is an
+  easy hour to lose.
+- **Powering the receiver on does not, by itself, wake the TV.** CEC "one touch
+  play" is initiated by a *source* device, not by the amplifier in the middle.
+  Cycling the receiver with HDMI Control enabled left the TV asleep and off the
+  network for a full minute.
+
+So the expected path to TV power is the **Apple TV**: waking it should send one
+touch play, which turns the TV on and pulls both the TV and the receiver to the
+right input. That makes finishing Companion pairing the prerequisite for TV
+power, not a separate feature.
+
+Still to confirm, and both need someone in the room:
+
+- **Anynet+ (HDMI-CEC) must be enabled on the TV** — it is a TV menu setting and
+  cannot be checked or changed over the network.
+- Whether the TV was in standby or switched off at the wall during the test. It
+  was unreachable throughout, so the CEC result is inconclusive rather than
+  negative.
+
+To change these settings yourself, the receiver takes raw protocol strings:
+
+```sh
+homeremote send denon raw SSHOS ?          # read the whole HDMI setup
+homeremote send denon raw SSHOSCON ON      # enable  (receiver must be ON)
+homeremote send denon raw SSHOSCON OFF     # revert
+```
 
 ## Activities
 
@@ -160,4 +202,4 @@ protocol that breaks cannot block a build.
 - [x] Denon control and live state
 - [x] Daemon, REST/WebSocket API, React remote, activities
 - [ ] Apple TV over the Companion protocol
-- [ ] Samsung — blocked: this model has no IP remote API (use HDMI-CEC)
+- [ ] Samsung — this model has no IP remote API; HDMI-CEC enabled on the receiver, awaiting confirmation that Anynet+ is on

@@ -161,6 +161,7 @@ pub async fn discover(timeout: Duration) -> Result<Vec<Discovered>> {
                 .and_then(|i| i.device.model_name.clone())
                 .or_else(|| description.model_name.clone()),
             addr,
+            port: None,
             // Only the live TV knows which interface is actually connected, and
             // that is the one Wake-on-LAN has to target. In standby this stays
             // empty and is filled in by the next scan with the TV on.

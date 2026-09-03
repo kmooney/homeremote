@@ -49,6 +49,9 @@ pub struct DeviceConfig {
     /// never the identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addr: Option<IpAddr>,
+    /// Control port for devices that advertise one; re-resolved by discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     /// Needed to wake the TV, which stops answering IP in standby.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mac: Option<MacAddr>,
@@ -63,6 +66,7 @@ impl DeviceConfig {
             vendor: found.vendor,
             name: found.name.clone(),
             addr: Some(found.addr),
+            port: found.port,
             mac: found.mac,
             credentials: None,
         }
@@ -82,6 +86,7 @@ impl DeviceConfig {
             addr: self
                 .addr
                 .ok_or_else(|| Error::Config(format!("no address known for {}", self.id)))?,
+            port: self.port,
             mac: self.mac,
         })
     }
@@ -91,6 +96,9 @@ impl DeviceConfig {
     pub fn refresh(&mut self, found: &Discovered) {
         self.addr = Some(found.addr);
         self.name = found.name.clone();
+        if found.port.is_some() {
+            self.port = found.port;
+        }
         if found.mac.is_some() {
             self.mac = found.mac;
         }
@@ -103,11 +111,16 @@ impl DeviceConfig {
 pub enum Credentials {
     /// Returned by the TV when someone taps Allow on screen.
     Samsung { token: String },
-    /// The Companion long-term keys, hex-encoded.
+    /// Companion pairing credentials, hex-encoded.
     AppleTv {
-        identifier: String,
-        ltpk: String,
-        ltsk: String,
+        /// The Apple TV's long-term public key.
+        device_public: String,
+        /// Our long-term private key.
+        client_private: String,
+        /// The Apple TV's pairing identifier.
+        device_id: String,
+        /// The identifier we gave it.
+        client_id: String,
     },
 }
 
@@ -221,6 +234,7 @@ mod tests {
             name: "Living Room".into(),
             model: None,
             addr: IpAddr::V4(Ipv4Addr::from(addr)),
+            port: None,
             mac: mac.map(|m| m.parse().unwrap()),
         }
     }
@@ -241,6 +255,7 @@ mod tests {
             vendor: Vendor::Samsung,
             name: "Living Room".into(),
             addr: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20))),
+            port: None,
             mac: Some("a0:b1:c2:d3:e4:f5".parse().unwrap()),
             credentials: Some(Credentials::Samsung {
                 token: "12345678".into(),

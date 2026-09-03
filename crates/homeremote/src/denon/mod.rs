@@ -118,6 +118,7 @@ pub async fn discover(timeout: Duration) -> Result<Vec<Discovered>> {
             name: desc.friendly_name.clone().unwrap_or_else(|| model.clone()),
             model: Some(model),
             addr,
+            port: None,
             // Denon sets its serial to its MAC, so this is free.
             mac: serial.parse().ok(),
         });

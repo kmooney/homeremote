@@ -453,3 +453,250 @@ impl<'a> Cursor<'a> {
         Ok(value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enc(v: Value) -> Vec<u8> {
+        encode(&v).expect("should encode")
+    }
+
+    // -- Encoding, against vectors from pyatv's opack tests -----------------
+
+    #[test]
+    fn encodes_singletons() {
+        assert_eq!(enc(Value::Bool(true)), b"\x01");
+        assert_eq!(enc(Value::Bool(false)), b"\x02");
+        assert_eq!(enc(Value::Null), b"\x04");
+    }
+
+    #[test]
+    fn encodes_uuid() {
+        let uuid = [
+            0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78, 0x12, 0x34,
+            0x56, 0x78,
+        ];
+        assert_eq!(enc(Value::Uuid(uuid)), [b"\x05".as_slice(), &uuid].concat());
+    }
+
+    #[test]
+    fn small_integers_live_in_the_tag_byte() {
+        assert_eq!(enc(Value::Int(0)), b"\x08");
+        assert_eq!(enc(Value::Int(0xF)), b"\x17");
+        assert_eq!(enc(Value::Int(0x27)), b"\x2F");
+    }
+
+    #[test]
+    fn larger_integers_take_a_length_tag() {
+        // 0x28 is the first value that no longer fits in the tag.
+        assert_eq!(enc(Value::Int(0x28)), b"\x30\x28");
+        assert_eq!(enc(Value::Int(0x1FF)), b"\x31\xFF\x01");
+        assert_eq!(enc(Value::Int(0x1FF_FFFF)), b"\x32\xFF\xFF\xFF\x01");
+        assert_eq!(
+            enc(Value::Int(0x1FF_FFFF_FFFF_FFFF)),
+            b"\x33\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x01"
+        );
+    }
+
+    #[test]
+    fn encodes_float64_little_endian() {
+        assert_eq!(enc(Value::Float(1.0)), b"\x06\x00\x00\x00\x00\x00\x00\xF0\x3F");
+    }
+
+    #[test]
+    fn encodes_strings_by_length_class() {
+        assert_eq!(enc(Value::from("a")), b"\x41a");
+        assert_eq!(enc(Value::from("abc")), b"\x43abc");
+        // 64 bytes is past the in-tag limit, so a 1-byte length follows.
+        let long = "a".repeat(64);
+        assert_eq!(enc(Value::from(long.clone())), [b"\x61\x40".as_slice(), long.as_bytes()].concat());
+        // 256 needs two.
+        let longer = "a".repeat(256);
+        assert_eq!(
+            enc(Value::from(longer.clone())),
+            [b"\x62\x00\x01".as_slice(), longer.as_bytes()].concat()
+        );
+    }
+
+    #[test]
+    fn encodes_byte_strings() {
+        assert_eq!(enc(Value::Bytes(vec![0xAC])), b"\x71\xAC");
+        let long = vec![0xACu8; 256];
+        assert_eq!(
+            enc(Value::Bytes(long.clone())),
+            [b"\x92\x00\x01".as_slice(), &long].concat()
+        );
+    }
+
+    #[test]
+    fn encodes_arrays() {
+        let array = Value::Array(vec![Value::Int(1), Value::from("test"), Value::Bool(false)]);
+        assert_eq!(enc(array), b"\xD3\x09\x44test\x02");
+    }
+
+    #[test]
+    fn encodes_dictionaries() {
+        assert_eq!(enc(dict([("a", Value::Int(12))])), b"\xE1\x41\x61\x14");
+    }
+
+    #[test]
+    fn repeated_values_become_back_references() {
+        // Apple repeats key names constantly; without pointers our output
+        // would not match what the device produces.
+        assert_eq!(
+            enc(Value::Array(vec![Value::from("a"), Value::from("a")])),
+            b"\xD2\x41\x61\xA0"
+        );
+        assert_eq!(
+            enc(Value::Array(vec![
+                Value::from("foo"),
+                Value::from("bar"),
+                Value::from("foo"),
+                Value::from("bar"),
+            ])),
+            b"\xD4\x43foo\x43bar\xA0\xA1"
+        );
+    }
+
+    // -- Decoding ----------------------------------------------------------
+
+    #[test]
+    fn decodes_what_it_encodes() {
+        let cases = vec![
+            Value::Null,
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Int(0),
+            Value::Int(0x27),
+            Value::Int(0x28),
+            Value::Int(0x1FF),
+            Value::Int(0x1FF_FFFF),
+            Value::Int(0x1FF_FFFF_FFFF_FFFF),
+            Value::Float(1.0),
+            Value::Float(-273.15),
+            Value::Uuid([7u8; 16]),
+            Value::from("a"),
+            Value::from("a".repeat(64)),
+            Value::from("a".repeat(300)),
+            Value::Bytes(vec![0xAC]),
+            Value::Bytes(vec![0xACu8; 300]),
+            Value::Array(vec![Value::Int(1), Value::from("test"), Value::Bool(false)]),
+            dict([("a", Value::Int(12))]),
+        ];
+        for case in cases {
+            let bytes = encode(&case).expect("encode");
+            assert_eq!(decode(&bytes).expect("decode"), case, "round trip failed");
+        }
+    }
+
+    #[test]
+    fn decodes_back_references() {
+        let value = Value::Array(vec![
+            Value::from("foo"),
+            Value::from("bar"),
+            Value::from("foo"),
+        ]);
+        let bytes = encode(&value).expect("encode");
+        assert!(bytes.contains(&0xA0), "should have emitted a pointer");
+        assert_eq!(decode(&bytes).expect("decode"), value);
+    }
+
+    #[test]
+    fn decodes_length_terminated_collections() {
+        // 0xDF / 0xEF forms end with 0x03 instead of carrying a count. We only
+        // emit them for big collections, but the device uses them freely.
+        assert_eq!(
+            decode(b"\xDF\x08\x09\x03").unwrap(),
+            Value::Array(vec![Value::Int(0), Value::Int(1)])
+        );
+        assert_eq!(
+            decode(b"\xEF\x41\x61\x14\x03").unwrap(),
+            dict([("a", Value::Int(12))])
+        );
+    }
+
+    #[test]
+    fn decodes_a_large_collection() {
+        // 15 or more entries cannot use the in-tag count.
+        let items: Vec<Value> = (0..20).map(Value::Int).collect();
+        let value = Value::Array(items.clone());
+        let bytes = encode(&value).unwrap();
+        assert_eq!(bytes[0], 0xDF, "should use the terminated form");
+        assert_eq!(decode(&bytes).unwrap(), value);
+
+        let big = dict((0..20).map(|i| (format!("k{i:02}"), Value::Int(i))));
+        let bytes = encode(&big).unwrap();
+        assert_eq!(bytes[0], 0xEF);
+        assert_eq!(decode(&bytes).unwrap(), big);
+    }
+
+    #[test]
+    fn nested_structures_survive() {
+        let value = dict([
+            ("_i", Value::from("_systemInfo")),
+            ("_x", Value::Int(1234)),
+            (
+                "_c",
+                dict([
+                    ("_pubID", Value::from("aa:bb:cc:dd:ee:ff")),
+                    ("_flags", Value::Int(1)),
+                    ("nested", Value::Array(vec![Value::from("_i"), Value::Null])),
+                ]),
+            ),
+        ]);
+        let bytes = encode(&value).unwrap();
+        assert_eq!(decode(&bytes).unwrap(), value);
+    }
+
+    // -- Malformed input ---------------------------------------------------
+
+    #[test]
+    fn truncated_input_is_an_error_not_a_panic() {
+        // Everything here arrives over a socket from a device we don't control.
+        let full = encode(&dict([("key", Value::from("value"))])).unwrap();
+        for cut in 1..full.len() {
+            let result = decode(&full[..cut]);
+            assert!(result.is_err(), "truncation at {cut} should fail cleanly");
+        }
+    }
+
+    #[test]
+    fn unknown_tags_are_rejected() {
+        assert!(decode(b"\x00").is_err());
+        assert!(decode(b"\xFF").is_err());
+        assert!(decode(&[]).is_err());
+    }
+
+    #[test]
+    fn a_dangling_back_reference_is_rejected() {
+        // Pointing past the table would otherwise index out of bounds.
+        assert!(decode(b"\xA5").is_err());
+        assert!(decode(b"\xD1\xA0").is_err());
+    }
+
+    #[test]
+    fn invalid_utf8_in_a_string_is_rejected() {
+        assert!(decode(b"\x42\xFF\xFE").is_err());
+    }
+
+    #[test]
+    fn unterminated_collections_are_rejected() {
+        assert!(decode(b"\xDF\x08").is_err());
+        assert!(decode(b"\xEF\x41\x61\x14").is_err());
+    }
+
+    #[test]
+    fn non_string_dictionary_keys_are_rejected() {
+        // Losing sync with the stream shows up here first.
+        assert!(decode(b"\xE1\x08\x08").is_err());
+    }
+
+    #[test]
+    fn a_huge_declared_length_does_not_allocate() {
+        // 0x64 declares a 4-byte length; claiming 4GB must fail on the bounds
+        // check rather than trying to reserve it.
+        assert!(decode(b"\x64\xFF\xFF\xFF\xFF").is_err());
+        assert!(decode(b"\x94\xFF\xFF\xFF\xFF").is_err());
+    }
+}

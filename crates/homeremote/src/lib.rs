@@ -69,7 +69,37 @@ pub fn open(device: &config::DeviceConfig) -> Result<std::sync::Arc<dyn Device>>
         #[cfg(not(feature = "denon"))]
         Vendor::Denon => Err(Error::NotImplemented("Denon")),
         Vendor::Samsung => Err(Error::NotImplemented("Samsung")),
+        #[cfg(feature = "appletv")]
+        Vendor::AppleTv => {
+            let credentials = appletv_credentials(device)?;
+            Ok(std::sync::Arc::new(appletv::AppleTv::connect(
+                &found,
+                credentials,
+            )))
+        }
+        #[cfg(not(feature = "appletv"))]
         Vendor::AppleTv => Err(Error::NotImplemented("Apple TV")),
+    }
+}
+
+/// Read stored Companion credentials, or say the device needs pairing.
+#[cfg(feature = "appletv")]
+fn appletv_credentials(device: &config::DeviceConfig) -> Result<appletv::pairing::Credentials> {
+    match &device.credentials {
+        Some(config::Credentials::AppleTv {
+            device_public,
+            client_private,
+            device_id,
+            client_id,
+        }) => appletv::pairing::Credentials::from_hex(
+            device_public,
+            client_private,
+            device_id,
+            client_id,
+        ),
+        // Not an error worth logging loudly: an unpaired Apple TV is the
+        // normal state until someone runs pairing.
+        _ => Err(Error::NotPaired),
     }
 }
 

@@ -616,6 +616,7 @@ mod tests {
             model: None,
             // TEST-NET-1: guaranteed not to be a real receiver.
             addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            port: None,
             mac: None,
         };
         DenonReceiver::connect(&found)
