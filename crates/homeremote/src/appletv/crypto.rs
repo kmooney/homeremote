@@ -313,6 +313,30 @@ mod tests {
     }
 
     #[test]
+    fn session_keys_and_cipher_match_the_reference() {
+        // Known answers from Python's `cryptography` for the same inputs, so an
+        // empty HKDF salt, the info strings, the 12-byte little-endian counter
+        // nonce and the header-as-AAD are all pinned.
+        let shared: Vec<u8> = (0u8..32).collect();
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+
+        let out_key = hkdf_sha512("", "ClientEncrypt-main", &shared);
+        let in_key = hkdf_sha512("", "ServerEncrypt-main", &shared);
+        assert_eq!(
+            hex(&out_key),
+            "9f8aa265911271e6d6e90daf564d82b5913d4b760373afbd6c03e675af681f8d"
+        );
+        assert_eq!(
+            hex(&in_key),
+            "df91c3c41e8d3901f7c525e250cb59237271d5a0202cdd8dd8bd3a4ade77bfe8"
+        );
+
+        let mut cipher = SessionCipher::new(out_key, in_key);
+        let sealed = cipher.encrypt(b"hello world", &[8u8, 0, 0, 27]).unwrap();
+        assert_eq!(hex(&sealed), "8bdb29855211b1b20d6785d95d63face169e8016b8ea8df0daaac7");
+    }
+
+    #[test]
     fn session_cipher_round_trips_in_lockstep() {
         // The two ends each keep a counter; they must advance together.
         let mut sender = SessionCipher::new([1u8; KEY_LEN], [2u8; KEY_LEN]);

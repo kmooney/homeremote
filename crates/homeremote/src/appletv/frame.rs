@@ -117,9 +117,14 @@ pub fn parse_header(bytes: &[u8; HEADER_LEN]) -> (FrameType, usize) {
 // ---------------------------------------------------------------------------
 
 /// Message type, carried as `_t`.
-pub const REQUEST: i64 = 1;
-pub const RESPONSE: i64 = 2;
-pub const EVENT: i64 = 3;
+///
+/// The numbering is not the obvious one: an **event is 1 and a request is 2**.
+/// Sending a request as 1 marks it as an event, which needs no reply — so the
+/// device accepts the frame and answers nothing, and the connection just goes
+/// quiet with no error anywhere.
+pub const EVENT: i64 = 1;
+pub const REQUEST: i64 = 2;
+pub const RESPONSE: i64 = 3;
 
 /// Wrap a command in the envelope the device expects.
 ///
@@ -203,6 +208,16 @@ mod tests {
         assert!(FrameType::PvNext.is_auth());
         assert!(FrameType::EOpack.is_opack() && !FrameType::EOpack.is_auth());
         assert!(!FrameType::SessionData.is_opack());
+    }
+
+    #[test]
+    fn message_type_numbering_matches_the_device() {
+        // Event is 1 and Request is 2, not the other way round. Getting this
+        // backwards makes every command a fire-and-forget event and the device
+        // answers nothing at all.
+        assert_eq!(EVENT, 1);
+        assert_eq!(REQUEST, 2);
+        assert_eq!(RESPONSE, 3);
     }
 
     #[test]

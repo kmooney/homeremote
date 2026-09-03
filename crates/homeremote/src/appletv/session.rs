@@ -201,7 +201,9 @@ pub async fn open_session(
     // The device wants to know who it is talking to before it will take
     // commands, and then a session has to be opened explicitly.
     let client_id = String::from_utf8_lossy(&credentials.client_id).to_string();
-    link.command(
+    // Introducing ourselves is courtesy, not a requirement: some firmware
+    // ignores it entirely. Don't let it block the session.
+    let system_info = link.command(
         "_systemInfo",
         dict([
             ("_bf", Value::Int(0)),
@@ -216,7 +218,10 @@ pub async fn open_session(
             ("name", Value::from("Home Remote")),
         ]),
     )
-    .await?;
+    .await;
+    if let Err(e) = system_info {
+        tracing::debug!(error = %e, "_systemInfo was not answered; continuing");
+    }
 
     let local_sid: i64 = i64::from(rand::random::<u32>());
     link.command(

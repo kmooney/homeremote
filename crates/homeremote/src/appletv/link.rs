@@ -90,6 +90,9 @@ impl Link {
             .await
             .map_err(|_| Error::Timeout)??;
         let (frame_type, length) = frame::parse_header(&header);
+        // Logged before the body so a stalled read is distinguishable from
+        // nothing arriving at all.
+        tracing::debug!(?frame_type, length, "<- header");
 
         if length > MAX_FRAME {
             return Err(Error::Protocol(format!(
@@ -138,8 +141,10 @@ impl Link {
     /// Send a `_i`/`_t`/`_c` command and return its content.
     pub async fn command(&mut self, identifier: &str, content: Value) -> Result<Value> {
         let xid = self.take_xid();
+        tracing::debug!(identifier, xid, encrypted = self.is_encrypted(), "command ->");
         let message = frame::request(identifier, xid, content);
         let reply = self.exchange(FrameType::EOpack, &message).await?;
+        tracing::debug!(identifier, "command <- ok");
         Ok(reply.get("_c").cloned().unwrap_or(Value::Null))
     }
 }

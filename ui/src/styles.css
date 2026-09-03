@@ -129,8 +129,42 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   border-color: var(--accent);
 }
 
+/* Collapsed input selector: a summary row that opens the grid. */
+.disclosure {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: left;
+}
+.disclosure:active:not(:disabled) { transform: none; background: none; }
+.triangle {
+  color: var(--muted);
+  font-size: 11px;
+  transition: transform 120ms ease;
+  display: inline-block;
+}
+.triangle.open { transform: rotate(90deg); }
+.disclosure-label {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.disclosure-value {
+  margin-left: auto;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+}
+
 /* Inputs: two columns, so long labels like "DVD/Blu-ray" still fit. */
-.inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
 .input { min-height: 56px; font-size: 15px; font-weight: 500; padding: 0 10px; }
 .input[aria-current="true"] {
   background: var(--accent);
