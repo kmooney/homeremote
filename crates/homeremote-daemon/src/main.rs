@@ -7,10 +7,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use homeremote::config::Config;
+use homeremote::device::{Device, DeviceEvent};
 use homeremote::discovery::DEFAULT_TIMEOUT;
+
+mod cli;
 
 #[derive(Parser)]
 #[command(name = "homeremote", version, about = "Control the TV, receiver, and Apple TV over IP")]
@@ -39,6 +42,33 @@ enum Commands {
         #[arg(long)]
         save: bool,
     },
+    /// Send a command to a device.
+    ///
+    /// Examples:
+    ///   homeremote send denon volume up
+    ///   homeremote send denon volume 40%
+    ///   homeremote send denon input MPLAY
+    ///   homeremote send denon raw PSBAS UP
+    #[command(verbatim_doc_comment)]
+    Send {
+        /// Device id, name, or vendor — any unambiguous fragment.
+        device: String,
+        /// The command, e.g. `volume up`.
+        #[arg(required = true, trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    /// Print a device's state and follow it live.
+    ///
+    /// Changes made with the physical remote show up here too, which is the
+    /// quickest way to confirm the event stream is working.
+    #[command(verbatim_doc_comment)]
+    Watch {
+        /// Device id, name, or vendor.
+        device: String,
+        /// Stop after this long. Runs until interrupted if omitted.
+        #[arg(long, value_name = "SECONDS")]
+        seconds: Option<u64>,
+    },
     /// Show the resolved config path and what's in it.
     Config,
 }
@@ -57,8 +87,113 @@ async fn main() -> Result<()> {
         Commands::Discover { timeout, save } => {
             discover(&config_path, Duration::from_secs(timeout), save).await
         }
+        Commands::Send { device, command } => send(&config_path, &device, &command).await,
+        Commands::Watch { device, seconds } => watch(&config_path, &device, seconds).await,
         Commands::Config => show_config(&config_path),
     }
+}
+
+/// Open a saved device, waiting briefly for its first state to arrive.
+///
+/// Backends connect in the background, so acting the instant `open` returns
+/// would race the connection and report "unreachable" for a device that is
+/// simply still shaking hands.
+async fn open(
+    config_path: &std::path::Path,
+    needle: &str,
+) -> Result<std::sync::Arc<dyn Device>> {
+    let config = Config::load(config_path)?;
+    if config.devices.is_empty() {
+        bail!(
+            "no devices configured yet — run `homeremote discover --save` first\n\
+             (config: {})",
+            config_path.display()
+        );
+    }
+    let entry = cli::resolve(&config, needle)?;
+    let device = homeremote::open(entry)
+        .with_context(|| format!("opening {}", entry.name))?;
+
+    // Give the background connection a moment to land.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    while tokio::time::Instant::now() < deadline && !device.state().await.reachable {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(device)
+}
+
+async fn send(config_path: &std::path::Path, needle: &str, words: &[String]) -> Result<()> {
+    let command = cli::parse_command(words)?;
+    let device = open(config_path, needle).await?;
+
+    device
+        .send(command.clone())
+        .await
+        .with_context(|| format!("sending {} to {}", command.describe(), device.name()))?;
+
+    // The receiver reports the result of a command rather than acknowledging
+    // it, so pause for the echo before printing what actually happened.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    print_state(device.as_ref()).await;
+    Ok(())
+}
+
+async fn watch(config_path: &std::path::Path, needle: &str, seconds: Option<u64>) -> Result<()> {
+    let device = open(config_path, needle).await?;
+    let mut events = device.subscribe();
+    print_state(device.as_ref()).await;
+    eprintln!("\nWatching for changes — try the physical remote. Ctrl-C to stop.");
+
+    let deadline = seconds.map(|s| tokio::time::Instant::now() + Duration::from_secs(s));
+    loop {
+        let next = events.recv();
+        let event = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, next).await {
+                Err(_) => return Ok(()),
+                Ok(event) => event,
+            },
+            None => next.await,
+        };
+        match event {
+            Ok(event) => println!("  {}", describe_event(&event)),
+            // Lagged: a burst outran the buffer. Say so rather than pretending
+            // the missed changes never happened.
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                println!("  ... {n} change(s) missed");
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+        }
+    }
+}
+
+fn describe_event(event: &DeviceEvent) -> String {
+    match event {
+        DeviceEvent::Power(on) => format!("power    {}", if *on { "on" } else { "off" }),
+        DeviceEvent::Volume(level) => format!("volume   {:.0}%", level * 100.0),
+        DeviceEvent::Muted(muted) => format!("mute     {}", if *muted { "on" } else { "off" }),
+        DeviceEvent::Input(input) => format!("input    {input}"),
+        DeviceEvent::Reachability(up) => {
+            format!("device   {}", if *up { "reachable" } else { "unreachable" })
+        }
+    }
+}
+
+async fn print_state(device: &dyn Device) {
+    let state = device.state().await;
+    println!("{}", device.name());
+    if !state.reachable {
+        println!("  unreachable");
+        return;
+    }
+    let show = |label: &str, value: Option<String>| {
+        if let Some(value) = value {
+            println!("  {label:8} {value}");
+        }
+    };
+    show("power", state.power.map(|p| if p { "on".into() } else { "off".into() }));
+    show("volume", state.volume.map(|v| format!("{:.0}%", v * 100.0)));
+    show("mute", state.muted.map(|m| if m { "on".into() } else { "off".into() }));
+    show("input", state.input);
 }
 
 fn init_tracing(verbose: bool) {

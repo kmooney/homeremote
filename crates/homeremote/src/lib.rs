@@ -57,6 +57,22 @@ pub(crate) fn http_client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
+/// Open a live connection to a configured device.
+///
+/// Returns immediately; backends connect in the background and reconnect on
+/// loss, so this succeeding does not mean the device is currently reachable.
+pub fn open(device: &config::DeviceConfig) -> Result<std::sync::Arc<dyn Device>> {
+    let found = device.as_discovered()?;
+    match device.vendor {
+        #[cfg(feature = "denon")]
+        Vendor::Denon => Ok(std::sync::Arc::new(denon::DenonReceiver::connect(&found))),
+        #[cfg(not(feature = "denon"))]
+        Vendor::Denon => Err(Error::Unsupported("Denon support is not compiled in")),
+        Vendor::Samsung => Err(Error::Unsupported("Samsung control is not implemented yet")),
+        Vendor::AppleTv => Err(Error::Unsupported("Apple TV control is not implemented yet")),
+    }
+}
+
 /// Find every supported device on the network.
 ///
 /// All three searches run concurrently, so the whole scan costs one `timeout`

@@ -68,6 +68,24 @@ impl DeviceConfig {
         }
     }
 
+    /// Rebuild the discovery record for a saved device, so it can be opened
+    /// without re-scanning.
+    ///
+    /// Fails when we have no address for it — a device saved while it was in
+    /// standby and never seen since.
+    pub fn as_discovered(&self) -> Result<Discovered> {
+        Ok(Discovered {
+            id: self.id.clone(),
+            vendor: self.vendor,
+            name: self.name.clone(),
+            model: None,
+            addr: self
+                .addr
+                .ok_or_else(|| Error::Config(format!("no address known for {}", self.id)))?,
+            mac: self.mac,
+        })
+    }
+
     /// Refresh the volatile fields from a fresh scan, keeping credentials and
     /// any MAC we already knew.
     pub fn refresh(&mut self, found: &Discovered) {

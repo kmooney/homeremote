@@ -4,6 +4,11 @@
 //! shapes everything downstream: **the receiver accepts exactly one connection
 //! on that port**. A second client is not refused, it is silently ignored.
 
+pub mod connection;
+pub mod protocol;
+
+pub use connection::DenonReceiver;
+
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -15,6 +20,15 @@ use crate::discovery::{Discovered, MacAddr, Vendor, ssdp, upnp};
 
 /// The receiver's control port.
 pub const CONTROL_PORT: u16 = 23;
+
+/// Fallback control path for when something else holds the single telnet
+/// socket: `http://<avr>/goform/formiPhoneAppDirect.xml?<COMMAND>`.
+///
+/// Port 80, verified against an AVR-S720W — port 8080 serves the UPnP
+/// description but answers 404 here. Fire-and-forget: it carries commands but
+/// gives no state back, so the event stream is lost while it is in use.
+pub const HTTP_CONTROL_PORT: u16 = 80;
+pub const HTTP_CONTROL_PATH: &str = "/goform/formiPhoneAppDirect.xml";
 
 /// Denon's own SSDP search target. Newer HEOS firmware answers this; the
 /// AVR-S720W does not, which is why it is only one of several sources.
