@@ -361,6 +361,29 @@ mod tests {
     }
 
     #[test]
+    fn srp_matches_the_reference_implementation() {
+        // Known answers generated with `srptools`, the library pyatv uses, for
+        // the same inputs. This pins every byte-level choice — the padding of
+        // k and u, the unpadded M1 terms, and K = H(S) — any one of which
+        // fails silently as a rejected proof.
+        let session = srp_client(&[0x11u8; 32], "1234", &[0x22u8; 16], &[0x33u8; 384]).unwrap();
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+
+        assert_eq!(session.public.len(), 384);
+        assert!(hex(&session.public).starts_with("c95341372ca4d0b469f87c0ae37bda63"));
+        assert_eq!(
+            hex(&session.proof),
+            "abd0ebded961f299d52ed1370354664a579e2b2a0e5ca2ec2e72d0601738d956             93bfb2f9b2cf26f360ef179c3e9f129d4d259d2ad42548cc51442b76897ba47e"
+                .replace(['\n', ' '], "")
+        );
+        assert_eq!(
+            hex(&session.session_key),
+            "e9c4d42f97be14085f55bf13a93d29c1f7647e6a8d5b926af1d368648c064e65             290358a2e1f034c679af5c5c55708ebe9a09dc4a17b4858d43bd723ff0c639f2"
+                .replace(['\n', ' '], "")
+        );
+    }
+
+    #[test]
     fn srp_produces_consistent_values() {
         let private = [0x11u8; 32];
         let salt = [0x22u8; 16];

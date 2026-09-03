@@ -170,6 +170,24 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .device .meta { font-size: 13px; color: var(--muted); }
 .device .warn { font-size: 13px; color: var(--danger); }
 
+.device .pair { min-height: 40px; padding: 0 18px; margin-top: 10px; font-size: 14px; }
+
+.pairing { margin-top: 12px; }
+.pinrow { display: flex; gap: 8px; margin-top: 8px; }
+.pin {
+  flex: 1;
+  min-width: 0;
+  font: 600 24px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.3em;
+  text-align: center;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  color: var(--text);
+}
+.pinrow button { min-height: 0; padding: 0 20px; }
+
 .toast {
   position: fixed;
   left: 50%;

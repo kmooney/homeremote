@@ -99,6 +99,17 @@ pub struct AppState {
     pub events: broadcast::Sender<ServerEvent>,
     /// Which activity is currently running, for the diffing logic and the UI.
     pub current_activity: RwLock<Option<String>>,
+    /// A pairing waiting on the PIN from the TV screen.
+    ///
+    /// Held here because the device ties the PIN to this open connection, and
+    /// it times out in well under a minute — which is why pairing belongs in
+    /// the UI rather than a slow copy-and-paste.
+    pub pending_pairing: tokio::sync::Mutex<Option<PendingPairing>>,
+}
+
+pub struct PendingPairing {
+    pub device: DeviceId,
+    pub pairing: homeremote::appletv::session::PendingPairing,
 }
 
 impl AppState {
@@ -110,6 +121,7 @@ impl AppState {
             devices: RwLock::new(HashMap::new()),
             events,
             current_activity: RwLock::new(None),
+            pending_pairing: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -175,6 +187,12 @@ impl AppState {
                 }
             }
         });
+    }
+
+    /// Re-open one device after its credentials changed.
+    pub async fn reopen(self: &Arc<Self>, id: &DeviceId) {
+        self.devices.write().await.remove(id);
+        self.open_devices().await;
     }
 
     pub async fn device(&self, id: &DeviceId) -> Option<Arc<dyn Device>> {

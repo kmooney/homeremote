@@ -230,6 +230,33 @@ mod tests {
     }
 
     #[test]
+    fn pair_setup_m3_matches_the_reference_byte_for_byte() {
+        // Generated with pyatv's own write_tlv and opack.pack. This pins the
+        // TLV field order (State first), the 255-byte fragmentation of the
+        // 384-byte key, and the OPACK envelope in one assertion.
+        use crate::appletv::tlv8::{Tag, Tlv};
+
+        let tlv = Tlv::new()
+            .set_byte(Tag::State, 0x03)
+            .set(Tag::PublicKey, vec![0xAAu8; 384])
+            .set(Tag::Proof, vec![0xBBu8; 64]);
+        let encoded = tlv.encode();
+        assert_eq!(encoded.len(), 457);
+        assert_eq!(&encoded[..8], b"\x06\x01\x03\x03\xff\xaa\xaa\xaa");
+
+        let message = pairing_message(
+            encoded,
+            &[("_pwTy", Value::Int(1)), ("_x", Value::Int(2))],
+        );
+        let packed = crate::appletv::opack::encode(&message).unwrap();
+        assert_eq!(packed.len(), 476);
+        assert_eq!(
+            &packed[..12],
+            b"\xe3\x43\x5f\x70\x64\x92\xc9\x01\x06\x01\x03\x03"
+        );
+    }
+
+    #[test]
     fn device_errors_are_surfaced() {
         let message = crate::appletv::opack::dict([("_em", Value::from("bad request"))]);
         assert_eq!(error_message(&message).as_deref(), Some("bad request"));

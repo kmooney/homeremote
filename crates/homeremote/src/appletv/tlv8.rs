@@ -6,8 +6,6 @@
 //! back together. The public keys exchanged during pairing are 384 bytes, so
 //! this is the normal case, not an edge case.
 
-use std::collections::BTreeMap;
-
 use crate::{Error, Result};
 
 /// TLV types used by pair-setup and pair-verify.
@@ -90,9 +88,12 @@ impl std::fmt::Display for PairingError {
 
 /// A decoded TLV8 message.
 ///
-/// Values are stored whole, with fragments already joined.
+/// Values are stored whole, with fragments already joined, and **in insertion
+/// order**. Order is not cosmetic: the device rejected a `pair-setup` M3 whose
+/// fields were sorted by tag rather than sent State-first, closing the
+/// connection without an error code.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Tlv(BTreeMap<u8, Vec<u8>>);
+pub struct Tlv(Vec<(u8, Vec<u8>)>);
 
 impl Tlv {
     pub fn new() -> Self {
@@ -100,7 +101,12 @@ impl Tlv {
     }
 
     pub fn set(mut self, tag: Tag, value: impl Into<Vec<u8>>) -> Self {
-        self.0.insert(tag.as_u8(), value.into());
+        let tag = tag.as_u8();
+        let value = value.into();
+        match self.0.iter_mut().find(|(t, _)| *t == tag) {
+            Some(slot) => slot.1 = value,
+            None => self.0.push((tag, value)),
+        }
         self
     }
 
@@ -110,7 +116,11 @@ impl Tlv {
     }
 
     pub fn get(&self, tag: Tag) -> Option<&[u8]> {
-        self.0.get(&tag.as_u8()).map(Vec::as_slice)
+        let tag = tag.as_u8();
+        self.0
+            .iter()
+            .find(|(t, _)| *t == tag)
+            .map(|(_, value)| value.as_slice())
     }
 
     pub fn get_byte(&self, tag: Tag) -> Option<u8> {
@@ -135,9 +145,33 @@ impl Tlv {
         self.0.is_empty()
     }
 
+    /// Tag names and value sizes, for logging a reply without dumping secrets.
+    pub fn describe(&self) -> String {
+        self.0
+            .iter()
+            .map(|(tag, value)| {
+                let name = match *tag {
+                    0x00 => "Method", 0x01 => "Identifier", 0x02 => "Salt",
+                    0x03 => "PublicKey", 0x04 => "Proof", 0x05 => "EncryptedData",
+                    0x06 => "State", 0x07 => "Error", 0x08 => "RetryDelay",
+                    0x0A => "Signature", 0x0B => "Permissions", 0x13 => "Flags",
+                    _ => "?",
+                };
+                // Small values are protocol codes, not secrets.
+                if value.len() <= 2 {
+                    format!("{name}(0x{tag:02x})={value:?}")
+                } else {
+                    format!("{name}(0x{tag:02x})[{} bytes]", value.len())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        for (&tag, value) in &self.0 {
+        for (tag, value) in &self.0 {
+            let tag = *tag;
             if value.is_empty() {
                 out.push(tag);
                 out.push(0);
@@ -154,7 +188,7 @@ impl Tlv {
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
-        let mut items: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
+        let mut items: Vec<(u8, Vec<u8>)> = Vec::new();
         let mut position = 0usize;
         // Only *consecutive* items of one type are fragments of one value; the
         // same type appearing again after another type starts a new value.
@@ -174,11 +208,12 @@ impl Tlv {
                 .get(start..end)
                 .ok_or_else(|| Error::Protocol("TLV item runs past the end".into()))?;
 
-            match items.get_mut(&tag) {
-                Some(existing) if previous == Some(tag) => existing.extend_from_slice(value),
-                _ => {
-                    items.insert(tag, value.to_vec());
-                }
+            match items.iter_mut().find(|(t, _)| *t == tag) {
+                // Only a directly preceding item of the same type is a
+                // continuation of this value.
+                Some(existing) if previous == Some(tag) => existing.1.extend_from_slice(value),
+                Some(existing) => existing.1 = value.to_vec(),
+                None => items.push((tag, value.to_vec())),
             }
 
             previous = Some(tag);
@@ -193,12 +228,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encodes_a_simple_message() {
+    fn fields_are_emitted_in_the_order_they_were_set() {
+        // The device is order-sensitive: pair-setup M3 must lead with State.
+        let tlv = Tlv::new()
+            .set_byte(Tag::State, 3)
+            .set(Tag::PublicKey, vec![0xAA]);
+        assert_eq!(tlv.encode(), b"\x06\x01\x03\x03\x01\xAA");
+
+        // Setting them the other way round gives the other order.
+        let reversed = Tlv::new()
+            .set(Tag::PublicKey, vec![0xAA])
+            .set_byte(Tag::State, 3);
+        assert_eq!(reversed.encode(), b"\x03\x01\xAA\x06\x01\x03");
+    }
+
+    #[test]
+    fn setting_a_tag_twice_replaces_it_in_place() {
         let tlv = Tlv::new()
             .set_byte(Tag::State, 1)
-            .set_byte(Tag::Method, 0);
-        // Ordered by tag: Method (0x00) then State (0x06).
-        assert_eq!(tlv.encode(), b"\x00\x01\x00\x06\x01\x01");
+            .set(Tag::PublicKey, vec![1])
+            .set_byte(Tag::State, 5);
+        assert_eq!(tlv.get_byte(Tag::State), Some(5));
+        assert_eq!(tlv.encode(), b"\x06\x01\x05\x03\x01\x01");
     }
 
     #[test]

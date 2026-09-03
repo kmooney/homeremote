@@ -127,6 +127,17 @@ export const api = {
     }),
 
   discover: () => request<{ devices: Device[] }>("/api/discover", { method: "POST" }),
+
+  pairStart: (deviceId: string) =>
+    request<void>(`/api/devices/${encodeURIComponent(deviceId)}/pair/start`, {
+      method: "POST",
+    }),
+
+  pairFinish: (deviceId: string, pin: string) =>
+    request<void>(`/api/devices/${encodeURIComponent(deviceId)}/pair/finish`, {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    }),
 };
 
 /**

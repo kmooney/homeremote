@@ -92,10 +92,24 @@ impl PendingPairing {
         // M2 arrived when pairing began; prove we know the PIN.
         let m2 = self.setup.pending_m2()?;
         let m3 = self.setup.prove_pin(&m2, pin)?;
-        let m4 = exchange_pairing(&mut self.link, FrameType::PsNext, m3, &[("_pwTy", Value::Int(1))]).await?;
+        let m4 = exchange_pairing(
+            &mut self.link,
+            FrameType::PsNext,
+            m3,
+            &[("_pwTy", Value::Int(1))],
+            "M3 (proving the PIN)",
+        )
+        .await?;
 
         let m5 = self.setup.exchange_identity(&m4)?;
-        let m6 = exchange_pairing(&mut self.link, FrameType::PsNext, m5, &[("_pwTy", Value::Int(1))]).await?;
+        let m6 = exchange_pairing(
+            &mut self.link,
+            FrameType::PsNext,
+            m5,
+            &[("_pwTy", Value::Int(1))],
+            "M5 (exchanging identities)",
+        )
+        .await?;
 
         self.setup.finish(&m6)
     }
@@ -107,13 +121,32 @@ async fn exchange_pairing(
     frame_type: FrameType,
     tlv: Tlv,
     extra: &[(&str, Value)],
+    step: &str,
 ) -> Result<Tlv> {
-    let message = frame::pairing_message(tlv.encode(), extra);
-    let reply = link.exchange(frame_type, &message).await?;
+    let xid = link.take_xid();
+    let mut fields: Vec<(&str, Value)> = extra.to_vec();
+    fields.push(("_x", Value::Int(xid)));
+    let message = frame::pairing_message(tlv.encode(), &fields);
+
+    tracing::debug!(step, ?frame_type, "pairing ->");
+    let reply = link.exchange(frame_type, &message).await.map_err(|e| {
+        // Naming the step turns "early eof" into something diagnosable.
+        Error::Protocol(format!("{step} failed: {e}"))
+    })?;
+    tracing::debug!(step, "pairing <- ok");
+
     let data = frame::pairing_data(&reply)?;
     let tlv = Tlv::decode(data)?;
+    tracing::debug!(step, tlv = %tlv.describe(), "pairing <- fields");
     if let Some(error) = tlv.error() {
-        return Err(Error::Protocol(format!("device refused pairing: {error}")));
+        let wait = tlv
+            .get(crate::appletv::tlv8::Tag::RetryDelay)
+            .and_then(|v| v.first())
+            .map(|secs| format!(" — wait {secs}s before trying again"))
+            .unwrap_or_default();
+        return Err(Error::Protocol(format!(
+            "device refused pairing at {step}: {error}{wait}"
+        )));
     }
     Ok(tlv)
 }
@@ -132,6 +165,7 @@ pub async fn begin_pairing(addr: IpAddr, port: Option<u16>) -> Result<PendingPai
         FrameType::PsStart,
         setup.start(),
         &[("_pwTy", Value::Int(1))],
+        "M1 (starting pairing)",
     )
     .await?;
     setup.accept_m2(m2);
@@ -154,11 +188,12 @@ pub async fn open_session(
         FrameType::PvStart,
         verify.start(),
         &[("_auTy", Value::Int(4))],
+        "verify M1",
     )
     .await?;
 
     let m3 = verify.respond(&m2)?;
-    exchange_pairing(&mut link, FrameType::PvNext, m3, &[]).await?;
+    exchange_pairing(&mut link, FrameType::PvNext, m3, &[], "verify M3").await?;
 
     let (out_key, in_key) = verify.session_keys()?;
     link.enable_encryption(out_key, in_key);

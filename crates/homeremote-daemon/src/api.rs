@@ -24,6 +24,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/devices", get(devices))
         .route("/api/devices/{id}/command", post(command))
+        .route("/api/devices/{id}/pair/start", post(pair_start))
+        .route("/api/devices/{id}/pair/finish", post(pair_finish))
         .route("/api/activities", get(activities))
         .route("/api/activities/{id}/start", post(start_activity))
         .route("/api/discover", post(discover))
@@ -76,6 +78,96 @@ async fn command(
         // request — the UI shows these differently.
         ApiError(StatusCode::BAD_GATEWAY, e.to_string())
     })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Begin pairing; the device puts a PIN on screen.
+async fn pair_start(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let id = DeviceId::new(id);
+    let entry = state
+        .config
+        .read()
+        .await
+        .device(&id)
+        .cloned()
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no device with id {id}")))?;
+
+    let addr = entry.addr.ok_or_else(|| {
+        ApiError(
+            StatusCode::BAD_REQUEST,
+            "no address known for that device — run a scan first".into(),
+        )
+    })?;
+
+    let pairing = homeremote::appletv::session::begin_pairing(addr, entry.port)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    *state.pending_pairing.lock().await = Some(crate::state::PendingPairing {
+        device: id,
+        pairing,
+    });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct PinRequest {
+    pin: String,
+}
+
+/// Finish pairing with the PIN from the screen and store the credentials.
+async fn pair_finish(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<PinRequest>,
+) -> Result<StatusCode, ApiError> {
+    let id = DeviceId::new(id);
+    let pending = state.pending_pairing.lock().await.take().ok_or_else(|| {
+        ApiError(
+            StatusCode::CONFLICT,
+            "no pairing is in progress — start one first".into(),
+        )
+    })?;
+
+    if pending.device != id {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "a pairing is in progress for a different device".into(),
+        ));
+    }
+
+    let credentials = pending
+        .pairing
+        .finish(&request.pin)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    let (device_public, client_private, device_id, client_id) = credentials.to_hex();
+    {
+        let mut config = state.config.write().await;
+        let entry = config.device_mut(&id).ok_or_else(|| {
+            ApiError(StatusCode::NOT_FOUND, "device vanished from the config".into())
+        })?;
+        entry.credentials = Some(homeremote::config::Credentials::AppleTv {
+            device_public,
+            client_private,
+            device_id,
+            client_id,
+        });
+    }
+    state.save_config().await.map_err(|e| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("paired, but could not save the credentials: {e}"),
+        )
+    })?;
+
+    // Bring the device up now that it can be controlled.
+    state.reopen(&id).await;
+    state.publish(ServerEvent::DevicesChanged);
     Ok(StatusCode::NO_CONTENT)
 }
 
