@@ -1,5 +1,5 @@
-/target
-/ui/node_modules
-/ui/dist
-*.tmp
 .DS_Store
+*.tmp
+/target
+/ui/dist
+/ui/node_modules

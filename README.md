@@ -1,30 +1,163 @@
 # Home Remote
 
-This is a project, built in rust to create a remote for my home.
+A replacement for a Logitech Harmony whose IR repeaters fire unreliably, built
+in Rust. Every device here is already on the network and IP-controllable, so
+this removes IR — the only unreliable link — entirely.
 
-The problem: I have a samsung TV, Denon reciever, and an apple TV.
+Two pieces, as originally planned:
 
-These are the 3 devices I use most to watch TV. I currently use a logitech
-harmony remote. It's terrible. The IR repeaters work inconsistently, so I cannot
-consistently control the volume when I am watching Apple TV.
+1. **`homeremote`** — a library that discovers and controls the devices over IP.
+2. **`homeremote-daemon`** — a single binary that serves a React remote to the
+   LAN, so any phone or laptop in the house is the remote.
 
-All of these devices are currently on my network, and are IP controllable.
+## Quick start
 
-I want to make two things: 1) a rust library that lets me control all of the
-devices, via IP, on the network. It should scan for the devices on the network
-so I do not have to set the IP address manually.
+```sh
+cd ui && npm install && npm run build && cd ..   # build the UI into the binary
+cargo build --release
 
-The Denon is a AVR-S720W - the current Denon AVR app on my iPhone can detect and
-control the app. I want to be able to control the volume, and pick the correct
-input.
+./target/release/homeremote discover --save      # find the devices
+./target/release/homeremote serve                # start the remote
+```
 
-The Apple TV should be controllable as if from the Harmony app. I believe the
-harmony app still uses IP control for the apple TV.
+`serve` prints the URLs to open. There is no login: it is a LAN appliance for
+one household, the same trust model the receiver and the TV already use.
 
-The Samsung is a Samsung Smart TV.
+## Devices
 
-Structure:
+### Denon AVR-S720W — working
 
-1. Build a rust library crate to control the TV
-2. Build a rust daemon that i can access via a react app that will let me
-   control the receiver, the TV and apple TV from a single application.
+Volume, power, mute, and input switching over the receiver's control port,
+plus a live state stream.
+
+The receiver **accepts exactly one connection on port 23** and refuses a second
+outright. If control stops working, something else on the network has taken the
+socket — an old Harmony hub, or Home Assistant. The daemon logs this specifically
+rather than reporting a generic failure.
+
+Volume moves in **half steps**: `MVUP` goes 57 → 57.5, not 57 → 58.
+
+### Apple TV — discovery only
+
+Found on the network; control is the remaining phase. The Companion protocol
+needs PIN pairing plus HAP-style crypto and a hand-written OPACK codec, with
+[pyatv](https://github.com/postlund/pyatv) as the reference.
+
+Its mDNS record mostly **rotates for privacy** — `rpBA`, `rpAD`, `rpHI`, `rpHN`,
+and `rpHA` all change within minutes. Identity is keyed on `rpMRtID`, which does
+not, so pairing credentials will survive.
+
+### Samsung UN55J6203 — no IP control available
+
+This set does not expose a remote-control API over IP. Verified while the TV was
+on and answering DIAL and UPnP:
+
+| Port | Purpose | State |
+|------|---------|-------|
+| 8001 / 8002 | Tizen websocket remote | closed |
+| 55000 | legacy Samsung remote | closed |
+| 7676 | UPnP (DLNA, DIAL, RenderingControl) | open |
+| 8080 | DIAL app launching | open |
+
+Its `RemoteControlReceiver` UPnP device advertises only `MultiScreenService`
+(app launching) — there is no key-input service to call. What *is* reachable:
+launching apps over DIAL, and volume/mute over `RenderingControl`, neither of
+which is useful here since the Denon handles audio.
+
+**The practical answer is HDMI-CEC.** With HDMI Control enabled on the receiver,
+powering it on and switching its input drives the TV's power and input for you.
+The TV appears in the UI marked unavailable so it is clear this is known, not
+broken.
+
+## Activities
+
+Harmony-style macros, defined in the config file. `homeremote config` prints its
+location.
+
+```toml
+[[activity]]
+id = "apple-tv"
+name = "Watch Apple TV"
+volume_device = "denon:0005CD91E7A1"   # volume always goes here
+
+  [[activity.steps]]
+  device = "denon:0005CD91E7A1"
+  command = { power = "on" }
+  delay_ms = 2500          # waits AFTER the step
+
+  [[activity.steps]]
+  device = "denon:0005CD91E7A1"
+  command = { input = "MPLAY" }
+```
+
+Two behaviours worth knowing:
+
+- **`delay_ms` is load-bearing.** The receiver ignores input commands for a
+  couple of seconds after power-on. Without the delay it works by hand and
+  fails as a macro.
+- **Steps already satisfied are skipped.** Switching between activities does not
+  power-cycle equipment both of them use.
+
+To find the input name your Apple TV is on: switch the receiver to it with its
+own remote, then run `homeremote watch denon` and read the input it reports.
+
+## CLI
+
+The CLI exists so every protocol can be exercised against real hardware without
+a UI in the way.
+
+```sh
+homeremote discover [--save]        # scan the network
+homeremote send denon volume up     # also: power on|off, mute, input MPLAY
+homeremote send denon volume 40%    # absolute level
+homeremote send denon raw PSBAS UP  # any protocol string
+homeremote watch denon              # follow state live, including the physical remote
+homeremote config                   # show config path and contents
+homeremote serve                    # run the daemon
+```
+
+Devices are matched by any unambiguous fragment of id, name, or vendor.
+
+## How discovery works
+
+Devices are keyed on a **stable identity, never an IP**, and re-resolved at every
+startup so a new DHCP lease breaks nothing.
+
+| Device | Identity | Found via |
+|--------|----------|-----------|
+| Denon | serial number (equals its MAC) | SSDP `upnp:rootdevice` + mDNS AirPlay, confirmed by manufacturer |
+| Samsung | UPnP UDN | SSDP `RemoteControlReceiver` |
+| Apple TV | `rpMRtID` | mDNS `_companion-link._tcp` |
+
+Some notes that cost time to find:
+
+- The AVR-S720W **ignores Denon's own SSDP target** and only answers the generic
+  `upnp:rootdevice` search, so candidates are gathered widely and confirmed by
+  the manufacturer field in each device description.
+- The Samsung is identified by UPnP rather than its Tizen endpoint because it
+  keeps serving UPnP in standby. Keying on an endpoint that only answers when
+  the set is awake would give one TV two identities.
+- Macs, iPhones, and HomePods all advertise Companion for Handoff. Only records
+  carrying an `rpMd` of `AppleTV*` are treated as an Apple TV.
+- SSDP sockets bind to `0.0.0.0` and select the interface with `IP_MULTICAST_IF`.
+  Binding to the interface address makes macOS reject multicast sends with
+  `EHOSTUNREACH`.
+
+## Development
+
+```sh
+cargo test                 # library, protocol, and activity tests
+cargo clippy --all-targets
+cd ui && npm run dev       # UI with hot reload, proxying to a running daemon
+```
+
+Device backends sit behind cargo features (`denon`, `samsung`, `appletv`), so a
+protocol that breaks cannot block a build.
+
+## Status
+
+- [x] Discovery for all three devices
+- [x] Denon control and live state
+- [x] Daemon, REST/WebSocket API, React remote, activities
+- [ ] Apple TV over the Companion protocol
+- [ ] Samsung — blocked: this model has no IP remote API (use HDMI-CEC)

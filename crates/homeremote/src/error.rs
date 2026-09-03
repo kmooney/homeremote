@@ -9,6 +9,9 @@ pub enum Error {
     #[error("device does not support this command: {0}")]
     Unsupported(&'static str),
 
+    #[error("{0} control is not implemented yet")]
+    NotImplemented(&'static str),
+
     #[error("device is not paired; run pairing first")]
     NotPaired,
 

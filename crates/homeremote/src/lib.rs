@@ -67,9 +67,9 @@ pub fn open(device: &config::DeviceConfig) -> Result<std::sync::Arc<dyn Device>>
         #[cfg(feature = "denon")]
         Vendor::Denon => Ok(std::sync::Arc::new(denon::DenonReceiver::connect(&found))),
         #[cfg(not(feature = "denon"))]
-        Vendor::Denon => Err(Error::Unsupported("Denon support is not compiled in")),
-        Vendor::Samsung => Err(Error::Unsupported("Samsung control is not implemented yet")),
-        Vendor::AppleTv => Err(Error::Unsupported("Apple TV control is not implemented yet")),
+        Vendor::Denon => Err(Error::NotImplemented("Denon")),
+        Vendor::Samsung => Err(Error::NotImplemented("Samsung")),
+        Vendor::AppleTv => Err(Error::NotImplemented("Apple TV")),
     }
 }
 

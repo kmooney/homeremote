@@ -13,7 +13,11 @@ use homeremote::config::Config;
 use homeremote::device::{Device, DeviceEvent};
 use homeremote::discovery::DEFAULT_TIMEOUT;
 
+mod activity;
+mod api;
+mod assets;
 mod cli;
+mod state;
 
 #[derive(Parser)]
 #[command(name = "homeremote", version, about = "Control the TV, receiver, and Apple TV over IP")]
@@ -69,6 +73,15 @@ enum Commands {
         #[arg(long, value_name = "SECONDS")]
         seconds: Option<u64>,
     },
+    /// Run the daemon and serve the remote to the network.
+    Serve {
+        /// Port to listen on.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Skip the discovery scan at startup and use saved addresses.
+        #[arg(long)]
+        no_scan: bool,
+    },
     /// Show the resolved config path and what's in it.
     Config,
 }
@@ -89,8 +102,57 @@ async fn main() -> Result<()> {
         }
         Commands::Send { device, command } => send(&config_path, &device, &command).await,
         Commands::Watch { device, seconds } => watch(&config_path, &device, seconds).await,
+        Commands::Serve { port, no_scan } => serve(&config_path, port, no_scan).await,
         Commands::Config => show_config(&config_path),
     }
+}
+
+/// Run the HTTP server until interrupted.
+async fn serve(config_path: &std::path::Path, port: Option<u16>, no_scan: bool) -> Result<()> {
+    let mut config = Config::load(config_path)?;
+    let port = port.unwrap_or(config.server.port);
+
+    // Re-resolve addresses at startup: a device that took a new DHCP lease
+    // would otherwise be unreachable until someone noticed and rescanned.
+    if !no_scan {
+        eprintln!("Scanning for devices...");
+        let found = homeremote::discover(DEFAULT_TIMEOUT).await;
+        config.merge_discovered(&found);
+        config.save(config_path)?;
+        eprintln!("Found {} device(s).", found.len());
+    }
+
+    let state = state::AppState::new(config_path.to_path_buf(), config);
+    state.open_devices().await;
+
+    for snapshot in state.snapshots().await {
+        match &snapshot.unavailable_because {
+            Some(reason) => eprintln!("  {:<24} {}", snapshot.name, reason),
+            None => eprintln!("  {:<24} ready", snapshot.name),
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+        .await
+        .with_context(|| format!("could not listen on port {port}"))?;
+
+    eprintln!("\nRemote ready:");
+    for addr in homeremote::discovery::local_ipv4_interfaces() {
+        eprintln!("  http://{addr}:{port}");
+    }
+    eprintln!("  http://localhost:{port}");
+    eprintln!("\nOpen one of these on a phone or laptop on the same network.");
+
+    axum::serve(listener, api::router(state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("the server stopped unexpectedly")?;
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    eprintln!("\nShutting down.");
 }
 
 /// Open a saved device, waiting briefly for its first state to arrive.
