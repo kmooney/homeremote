@@ -49,34 +49,41 @@ not, so pairing credentials will survive.
 
 ### Samsung UN55J6203 — no IP control available
 
-A full scan of all 65535 ports, with the TV awake and answering, found exactly
-three open:
+Settled by testing, not assumption. A scan of all 65535 ports, with the TV on
+and in use, found three open:
 
-| Port | Service | Useful? |
+| Port | Service | Verdict |
 |------|---------|---------|
-| 7676 | UPnP: DLNA, RenderingControl, AVTransport | volume/mute only, which the Denon already owns |
-| 8080 | DIAL | launches apps like YouTube and Netflix |
-| 7011 | Orsay Remote Web Inspector | bound, but resets on every HTTP request |
+| 7676 | UPnP: MultiScreenService, RenderingControl, AVTransport | see below |
+| 8080 | DIAL | launches apps; works, but the Apple TV already does streaming |
+| 7011 | Orsay Remote Web Inspector | accepts TCP, resets on every HTTP request |
 
-There is no key input, no input switching, and no power control.
+Port 7011 identifies this as a pre-**Orsay** set rather than Tizen, so Tizen's
+remote endpoints (`8002`, `/api/v2/`) were never going to exist here.
 
-The giveaway is port 7011: that is the **Orsay** Remote Web Inspector, so this
-is a pre-Tizen set. Tizen's remote-control endpoints (`8002`, `/api/v2/`) were
-never going to exist here — Orsay used port 55000 on older models and
-`8001` + `/ms/1.0/` on 2014-15 ones, and neither is listening.
+Three things look like the answer and are not. Each cost real time, so they are
+written down:
 
-Two details worth recording, because they look like leads and are not:
+1. **`sec:Capability` advertises a MultiScreen API on port 8001.** Connecting
+   there is *refused* — the IP stack is alive and nothing is bound. Checked
+   with the TV awake, in use, and at its current address. Firmware boilerplate.
+2. **The UPnP device is named `RemoteControlReceiver`**, which sounds decisive.
+3. **`MultiScreenService` exposes a `SendKeyCode` action** taking a `ui4`
+   keycode — genuine remote key input, on a port that *is* listening. It
+   returns HTTP 200 with a well-formed `SendKeyCodeResponse`. **It is a stub.**
+   230 codes were sent (0-127 and the documented Orsay band 29400-29499) with
+   the TV watched throughout: nothing happened on screen, and the TV never
+   changed state.
 
-- The TV **advertises** a MultiScreen API on port 8001 in its own UPnP
-  capability list, but connecting there is *refused* — the service is
-  advertised and not running. A cold boot is the usual remedy; it has not been
-  tried here.
-- Its `RemoteControlReceiver` UPnP device sounds like the answer but exposes
-  only `MultiScreenService`, which launches apps. There is no key-input
-  service behind it.
+So the TV has no power, input, or navigation control over IP. The remaining
+route is HDMI-CEC, or an IR blaster.
 
-In standby the TV leaves the network completely — no ping, no open ports — so
-every IP route is closed then too.
+**A trap worth knowing:** the TV changes IP between sessions, and in standby it
+leaves the network entirely — no ping, no ARP. Probing a remembered address
+therefore reports "off" for a TV that is on and answering elsewhere. The daemon
+is immune, since it keys devices on their UPnP UDN and re-resolves, but any
+ad-hoc testing must resolve via SSDP first. Conclusions drawn from a stale
+address here were wrong once already.
 
 ### HDMI-CEC, for TV power and input
 
@@ -96,10 +103,11 @@ Two things worth knowing:
 - **The receiver only accepts these settings while it is powered on.** Sending
   `SSHOSCON ON` in standby is accepted silently and does nothing, which is an
   easy hour to lose.
-- **Powering the receiver on does not, by itself, wake the TV.** CEC "one touch
-  play" is initiated by a *source* device, not by the amplifier in the middle.
-  Cycling the receiver with HDMI Control enabled left the TV asleep and off the
-  network for a full minute.
+- **Whether CEC wakes the TV is still unknown.** The test that appeared to rule
+  it out polled a stale IP address and is worthless; it must be re-run
+  resolving the TV via SSDP each time. CEC "one touch play" is initiated by a
+  *source* device rather than the amplifier in the middle, so the trigger to
+  test is waking the Apple TV, not powering the receiver on.
 
 So the expected path to TV power is the **Apple TV**: waking it should send one
 touch play, which turns the TV on and pulls both the TV and the receiver to the
