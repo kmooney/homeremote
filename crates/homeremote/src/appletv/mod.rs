@@ -88,6 +88,24 @@ pub async fn discover(timeout: Duration) -> Result<Vec<Discovered>> {
     Ok(devices)
 }
 
+/// Look up where one Apple TV is listening now.
+///
+/// The Companion port changes on every boot, and the address can move with a
+/// new DHCP lease, so a long-running connection has to re-ask rather than
+/// trust what it was given at startup.
+pub async fn resolve(id: &DeviceId, timeout: Duration) -> Option<(std::net::IpAddr, u16)> {
+    match discover(timeout).await {
+        Ok(found) => found
+            .into_iter()
+            .find(|d| &d.id == id)
+            .and_then(|d| Some((d.addr, d.port?))),
+        Err(e) => {
+            tracing::debug!(error = %e, "could not browse for the Apple TV");
+            None
+        }
+    }
+}
+
 /// Whether a Companion peer is an Apple TV rather than some other Apple device.
 ///
 /// The `rpMd` TXT key carries the hardware model (`AppleTV5,3`). Macs and

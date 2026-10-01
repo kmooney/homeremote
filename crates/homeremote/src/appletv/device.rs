@@ -26,6 +26,10 @@ const EVENT_QUEUE: usize = 32;
 const RECONNECT_DELAY_MIN: Duration = Duration::from_secs(1);
 const RECONNECT_DELAY_MAX: Duration = Duration::from_secs(60);
 
+/// How long to browse mDNS when a connection fails and the Apple TV may have
+/// moved. Short, because queued presses wait on it.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// The Apple TV closes Companion sessions that have gone quiet, so a link left
 /// idle longer than this is replaced before it is used rather than after it
 /// fails. Well under the observed timeout, since a stale link costs a wasted
@@ -73,6 +77,7 @@ impl AppleTv {
         };
 
         tokio::spawn(supervise(
+            found.id.clone(),
             found.addr,
             found.port,
             credentials,
@@ -169,8 +174,9 @@ fn is_link_failure(result: &Result<()>) -> bool {
 }
 
 async fn supervise(
-    addr: IpAddr,
-    port: Option<u16>,
+    id: DeviceId,
+    mut addr: IpAddr,
+    mut port: Option<u16>,
     credentials: Credentials,
     mut commands: mpsc::Receiver<Request>,
     events: broadcast::Sender<DeviceEvent>,
@@ -250,6 +256,22 @@ async fn supervise(
             Err(e) => {
                 tracing::debug!(%addr, error = %e, "could not reach the Apple TV");
                 set_reachable(&state, &events, false);
+
+                // Most often the Apple TV rebooted and is listening on a new
+                // port. Ask where it is now, and if it moved, go straight
+                // there instead of backing off against the old endpoint.
+                if let Some((new_addr, new_port)) = crate::appletv::resolve(&id, RESOLVE_TIMEOUT).await
+                    && (new_addr, Some(new_port)) != (addr, port)
+                {
+                    tracing::info!(
+                        old = %addr, old_port = ?port, %new_addr, new_port,
+                        "Apple TV moved; reconnecting at its new endpoint"
+                    );
+                    addr = new_addr;
+                    port = Some(new_port);
+                    delay = RECONNECT_DELAY_MIN;
+                    continue;
+                }
             }
         }
 
