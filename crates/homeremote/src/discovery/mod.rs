@@ -1,7 +1,7 @@
 //! Finding the devices, so nobody has to type an IP address.
 //!
-//! Three protocols, because the three devices don't agree on one: SSDP for the
-//! Denon and the Samsung, mDNS for the Apple TV. Everything here is
+//! Three protocols, because the devices don't agree on one: SSDP for the
+//! Denon and the Samsung, mDNS for the Apple TV and the IR bridge. Everything here is
 //! best-effort — a device that's powered off simply doesn't answer.
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -23,6 +23,8 @@ pub enum Vendor {
     Denon,
     Samsung,
     AppleTv,
+    /// Our own Wi-Fi to IR bridge, flashed from `firmware/ir-bridge`.
+    IrBridge,
 }
 
 impl Vendor {
@@ -31,6 +33,7 @@ impl Vendor {
             Vendor::Denon => DeviceKind::Receiver,
             Vendor::Samsung => DeviceKind::Television,
             Vendor::AppleTv => DeviceKind::StreamingBox,
+            Vendor::IrBridge => DeviceKind::IrBridge,
         }
     }
 }

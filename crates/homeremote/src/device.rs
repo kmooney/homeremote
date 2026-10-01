@@ -40,6 +40,8 @@ pub enum DeviceKind {
     Television,
     /// The Apple TV: owns navigation and transport.
     StreamingBox,
+    /// The ATOM that turns requests into IR for a device with no IP control.
+    IrBridge,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

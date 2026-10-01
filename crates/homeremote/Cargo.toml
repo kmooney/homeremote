@@ -1,16 +1,17 @@
 [package]
 name = "homeremote"
-description = "Control a Samsung TV, Denon AVR, and Apple TV over IP."
+description = "Control a Samsung TV, Denon AVR, and Apple TV over IP and a Wi-Fi IR bridge."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["denon", "samsung", "appletv"]
+default = ["denon", "samsung", "appletv", "irbridge"]
 denon = []
 samsung = []
 appletv = []
+irbridge = []
 
 [dependencies]
 async-trait = "0.1.92"

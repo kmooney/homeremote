@@ -1,8 +1,9 @@
 # Home Remote
 
 A replacement for a Logitech Harmony whose IR repeaters fire unreliably, built
-in Rust. Every device here is already on the network and IP-controllable, so
-this removes IR — the only unreliable link — entirely.
+in Rust. Everything is driven over the network. The one device with no IP
+control, the Samsung TV, gets its IR from a small Wi-Fi bridge sitting in front
+of it, rather than from the Harmony's repeaters.
 
 Two pieces, as originally planned:
 
@@ -76,7 +77,8 @@ written down:
    changed state.
 
 So the TV has no power, input, or navigation control over IP. The remaining
-route is HDMI-CEC, or an IR blaster.
+route is HDMI-CEC, or an IR blaster — and the IR blaster is what is in use: see
+the Wi-Fi IR bridge below.
 
 **A trap worth knowing:** the TV changes IP between sessions, and in standby it
 leaves the network entirely — no ping, no ARP. Probing a remembered address
@@ -84,6 +86,59 @@ therefore reports "off" for a TV that is on and answering elsewhere. The daemon
 is immune, since it keys devices on their UPnP UDN and re-resolves, but any
 ad-hoc testing must resolve via SSDP first. Conclusions drawn from a stale
 address here were wrong once already.
+
+### Wi-Fi IR bridge (M5Stack ATOM) — TV power
+
+An M5Stack ATOM Lite or Matrix (ESP32-PICO-D4) running `firmware/ir-bridge`
+joins the Wi-Fi, advertises `_homeremote-ir._tcp` over mDNS, and turns HTTP
+requests into Samsung IR from its built-in LED on GPIO 12. homeremote finds it
+in the normal scan and lists it as **Wi-Fi IR Bridge**, keyed on its MAC.
+
+```sh
+homeremote send irbridge power on    # discrete POWER ON  (0xE0E09966)
+homeremote send irbridge power off   # discrete POWER OFF (0xE0E019E6)
+homeremote send irbridge raw 0xE0E040BF   # any Samsung code, to try new ones
+```
+
+It sends Samsung's **discrete** power codes, not the toggle on the physical
+remote. IR gives no feedback, so a toggle sent to a TV that is already on would
+turn it off; the discrete codes are safe to repeat. For the same reason the
+bridge never reports the TV as on or off — only whether the bridge itself is
+online — so an activity always sends the code rather than skipping it.
+
+The firmware also answers directly, which is the quickest test of the IR path:
+
+```sh
+curl http://homeremote-ir-12bf08.local/               # status
+curl -X POST http://homeremote-ir-12bf08.local/power/on
+```
+
+After a minute offline it restarts and rejoins.
+
+**The ATOM's IR LED is weak.** A single ~70 ms frame only reached the TV with
+the bridge aimed carefully, so each request sends the code **20 times** (about
+two seconds). That is safe only because the codes are discrete. The bridge
+answers before it starts sending, so homeremote never waits on the IR.
+
+The LED is on the edge opposite the USB-C port, and it needs a clear view of
+the TV's IR window under the bottom bezel. To check that it fires at all, run
+`curl -X POST http://homeremote-ir-12bf08.local/ir/test`, which holds the IR on
+for three seconds. Watch it through a phone's **front** camera: iPhone rear
+cameras filter infrared out, so they show nothing even when the LED works.
+The RGB status LED is switched off (`STATUS_LED` in `main.cpp`), because its
+flash drowns out the IR glow in that test.
+
+#### Flashing
+
+Needs [PlatformIO](https://platformio.org) (`pip install platformio`). The
+ESP32 joins **2.4 GHz** networks only.
+
+```sh
+cd firmware/ir-bridge
+cp src/secrets.example.h src/secrets.h   # Wi-Fi name and password; git-ignored
+pio run -t upload                        # ATOM on USB
+pio device monitor                       # watch it join and print its address
+```
 
 ### HDMI-CEC, for TV power and input
 
@@ -189,6 +244,7 @@ startup so a new DHCP lease breaks nothing.
 | Denon | serial number (equals its MAC) | SSDP `upnp:rootdevice` + mDNS AirPlay, confirmed by manufacturer |
 | Samsung | UPnP UDN | SSDP `RemoteControlReceiver` |
 | Apple TV | `rpMRtID` | mDNS `_companion-link._tcp` |
+| IR bridge | its MAC, from the TXT record | mDNS `_homeremote-ir._tcp` |
 
 Some notes that cost time to find:
 
@@ -212,8 +268,8 @@ cargo clippy --all-targets
 cd ui && npm run dev       # UI with hot reload, proxying to a running daemon
 ```
 
-Device backends sit behind cargo features (`denon`, `samsung`, `appletv`), so a
-protocol that breaks cannot block a build.
+Device backends sit behind cargo features (`denon`, `samsung`, `appletv`,
+`irbridge`), so a protocol that breaks cannot block a build.
 
 ## Status
 
@@ -221,4 +277,4 @@ protocol that breaks cannot block a build.
 - [x] Denon control and live state
 - [x] Daemon, REST/WebSocket API, React remote, activities
 - [ ] Apple TV over the Companion protocol
-- [ ] Samsung — this model has no IP remote API; HDMI-CEC enabled on the receiver, awaiting confirmation that Anynet+ is on
+- [x] Samsung power, through the Wi-Fi IR bridge — this model has no IP remote API

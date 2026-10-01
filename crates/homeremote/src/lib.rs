@@ -1,14 +1,16 @@
 //! Control a Samsung TV, a Denon AVR, and an Apple TV over IP.
 //!
 //! Built to replace a Logitech Harmony whose IR repeaters fire unreliably.
-//! Every device here is already IP-addressable, so IR is the only unreliable
-//! link — removing it is the whole point.
+//! Everything is driven over IP; the one device with no IP control, the TV,
+//! gets its IR from a Wi-Fi bridge sitting in front of it.
 //!
 //! # Layout
 //!
 //! - [`device`] — the command vocabulary every backend speaks.
 //! - [`discovery`] — SSDP, mDNS, and Wake-on-LAN, so nobody types an IP.
 //! - [`denon`], [`samsung`], [`appletv`] — the per-device backends.
+//! - [`irbridge`] — the Wi-Fi to IR bridge that stands in for the Samsung,
+//!   which has no IP control of its own.
 //! - [`config`] — persisted device identities and pairing credentials.
 //!
 //! # Example
@@ -33,6 +35,8 @@ pub mod error;
 pub mod appletv;
 #[cfg(feature = "denon")]
 pub mod denon;
+#[cfg(feature = "irbridge")]
+pub mod irbridge;
 #[cfg(feature = "samsung")]
 pub mod samsung;
 
@@ -72,7 +76,7 @@ pub fn open(device: &config::DeviceConfig) -> Result<std::sync::Arc<dyn Device>>
         // DIAL app launching, and one undocumented binary service. It
         // advertises a MultiScreen API on 8001, but nothing listens there.
         Vendor::Samsung => Err(Error::NoIpControl(
-            "this TV serves only DLNA and app launching; power and input need HDMI-CEC",
+            "this TV serves only DLNA and app launching; its power goes through the IR bridge",
         )),
         #[cfg(feature = "appletv")]
         Vendor::AppleTv => {
@@ -84,6 +88,10 @@ pub fn open(device: &config::DeviceConfig) -> Result<std::sync::Arc<dyn Device>>
         }
         #[cfg(not(feature = "appletv"))]
         Vendor::AppleTv => Err(Error::NotImplemented("Apple TV")),
+        #[cfg(feature = "irbridge")]
+        Vendor::IrBridge => Ok(std::sync::Arc::new(irbridge::IrBridge::connect(&found))),
+        #[cfg(not(feature = "irbridge"))]
+        Vendor::IrBridge => Err(Error::NotImplemented("IR bridge")),
     }
 }
 
@@ -110,8 +118,8 @@ fn appletv_credentials(device: &config::DeviceConfig) -> Result<appletv::pairing
 
 /// Find every supported device on the network.
 ///
-/// All three searches run concurrently, so the whole scan costs one `timeout`
-/// rather than three. A backend that fails is logged and skipped rather than
+/// Every search runs concurrently, so the whole scan costs one `timeout`
+/// rather than one per backend. A backend that fails is logged and skipped rather than
 /// failing the scan — finding two of three devices is far more useful than
 /// finding none.
 pub async fn discover(timeout: Duration) -> Vec<Discovered> {
@@ -131,6 +139,10 @@ pub async fn discover(timeout: Duration) -> Vec<Discovered> {
     #[cfg(feature = "appletv")]
     scans.push(Box::pin(async move {
         ("Apple TV", appletv::discover(timeout).await)
+    }));
+    #[cfg(feature = "irbridge")]
+    scans.push(Box::pin(async move {
+        ("IR bridge", irbridge::discover(timeout).await)
     }));
 
     let mut all = Vec::new();

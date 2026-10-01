@@ -42,8 +42,8 @@ export interface InputOption {
 export interface Device {
   id: string;
   name: string;
-  vendor: "denon" | "samsung" | "apple-tv";
-  kind: "receiver" | "television" | "streaming-box";
+  vendor: "denon" | "samsung" | "apple-tv" | "ir-bridge";
+  kind: "receiver" | "television" | "streaming-box" | "ir-bridge";
   addr: string | null;
   capabilities: Capabilities | null;
   unavailableBecause: string | null;
