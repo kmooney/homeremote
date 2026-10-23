@@ -10,7 +10,7 @@ const DELAY_BEFORE_REPEAT = 400;
  * two round trips, so repeating faster than this only builds a queue that
  * plays out after the finger lifts.
  */
-const REPEAT_INTERVAL = 180;
+export const REPEAT_INTERVAL = 180;
 
 /**
  * Repeats after this many, to close a long distance without a long wait.

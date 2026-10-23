@@ -1,6 +1,27 @@
+import { useEffect, useRef } from "react";
 import type { Command, Device, NavKey, TransportKey } from "./api";
 import { Inputs } from "./Inputs";
-import { HoldButton } from "./HoldButton";
+import { HoldButton, REPEAT_INTERVAL } from "./HoldButton";
+
+/** Laptop keys that drive the Apple TV while the remote tab is open. */
+const KEY_COMMANDS: Record<string, Command> = {
+  ArrowUp: { nav: "up" },
+  ArrowDown: { nav: "down" },
+  ArrowLeft: { nav: "left" },
+  ArrowRight: { nav: "right" },
+  Enter: { nav: "select" },
+  Escape: { nav: "back" },
+  Backspace: { nav: "back" },
+  " ": { transport: "play-pause" },
+};
+
+/** Whether a key is meant for a field on the page rather than the TV. */
+function isTyping(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+  );
+}
 
 interface Props {
   volumeDevice: Device | null;
@@ -22,6 +43,33 @@ export function Remote({ volumeDevice, remoteDevice, inputDevice, onSend }: Prop
   const sendTransport = (key: TransportKey) => {
     if (remoteDevice) onSend(remoteDevice.id, { transport: key });
   };
+
+  // Kept in a ref so the listener, bound once, always sees the current device.
+  const sendKey = useRef<(command: Command) => void>(() => {});
+  sendKey.current = (command) => {
+    if (remoteDevice) onSend(remoteDevice.id, command);
+  };
+
+  useEffect(() => {
+    let lastRepeat = 0;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Leave browser shortcuts (Cmd+R, Ctrl+L, ...) and text fields alone.
+      if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return;
+      const command = KEY_COMMANDS[event.key];
+      if (!command) return;
+      // Otherwise Enter also clicks the focused button and arrows scroll the page.
+      event.preventDefault();
+      // Held keys auto-repeat faster than the Apple TV absorbs presses; pace
+      // them like a held button so nothing plays out after the key is released.
+      if (event.repeat) {
+        if (event.timeStamp - lastRepeat < REPEAT_INTERVAL) return;
+        lastRepeat = event.timeStamp;
+      }
+      sendKey.current(command);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   return (
     <>
