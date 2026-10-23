@@ -207,6 +207,7 @@ pub fn encode(command: &Command, max_volume: f32) -> Result<Vec<String>> {
         Command::Nav(_) | Command::Transport(_) => Err(Error::Unsupported(
             "the receiver does not handle navigation or transport keys",
         )),
+        Command::Text(_) => Err(Error::Unsupported("the receiver has no text input")),
 
         Command::Raw(raw) => {
             let raw = raw.trim();

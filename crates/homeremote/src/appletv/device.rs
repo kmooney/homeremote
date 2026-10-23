@@ -12,7 +12,9 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::appletv::link::Link;
+use crate::appletv::opack;
 use crate::appletv::pairing::Credentials;
+use crate::appletv::rti::TextField;
 use crate::appletv::session::{self, HidCommand};
 use crate::device::{
     Capabilities, Command, Device, DeviceEvent, DeviceId, DeviceKind, DeviceState, PowerState,
@@ -35,6 +37,16 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
 /// fails. Well under the observed timeout, since a stale link costs a wasted
 /// round trip and a visible error.
 const IDLE_BEFORE_REFRESH: Duration = Duration::from_secs(20);
+
+/// How often to ask whether a text field is focused, while someone is using
+/// the remote. The device does not announce it, so asking is the only way to
+/// find out, and a box that appears a second late is fine.
+const KEYBOARD_POLL: Duration = Duration::from_secs(1);
+
+/// Ask only for this long after the last command. A field is selected by
+/// someone navigating, and asking around the clock is traffic that could keep
+/// the Apple TV from sleeping.
+const KEYBOARD_WATCH: Duration = Duration::from_secs(120);
 
 struct Request {
     command: Command,
@@ -137,7 +149,7 @@ impl Device for AppleTv {
 }
 
 /// Translate a shared command into the button presses that carry it out.
-async fn dispatch(link: &mut Link, command: &Command) -> Result<()> {
+async fn dispatch(link: &mut Link, command: &Command, keyboard: &Keyboard<'_>) -> Result<()> {
     match command {
         Command::Nav(key) => session::press(link, HidCommand::for_nav(*key)).await,
         Command::Transport(key) => {
@@ -153,6 +165,19 @@ async fn dispatch(link: &mut Link, command: &Command) -> Result<()> {
         Command::Volume(_) => Err(Error::Unsupported(
             "set the volume on the receiver, not the Apple TV",
         )),
+        Command::Text(text) => {
+            let field = match keyboard.field() {
+                Some(field) => Some(field),
+                None => session::start_text_input(link).await?.map(KnownField::reported),
+            };
+            let Some(field) = field else {
+                return Err(Error::Unsupported("no text field is selected on the Apple TV"));
+            };
+            let from = field.typed.then_some(field.field.text.as_str());
+            session::set_text(link, &field.field.session, from, text).await?;
+            keyboard.typed(TextField { text: text.clone(), ..field.field });
+            Ok(())
+        }
         Command::Input(_) => Err(Error::Unsupported("the Apple TV has no inputs")),
         Command::Raw(_) => Err(Error::Unsupported(
             "the Apple TV takes named commands, not raw strings",
@@ -183,14 +208,16 @@ async fn supervise(
     state: Arc<Mutex<DeviceState>>,
 ) {
     let mut delay = RECONNECT_DELAY_MIN;
+    let keyboard = Keyboard { state: &state, events: &events, field: Mutex::new(None) };
 
     loop {
-        match session::open_session(addr, port, &credentials).await {
+        match connect(addr, port, &credentials, &keyboard).await {
             Ok(mut link) => {
                 tracing::info!(%addr, "Apple TV session established");
                 delay = RECONNECT_DELAY_MIN;
                 set_reachable(&state, &events, true);
                 let mut last_used = tokio::time::Instant::now();
+                let mut last_command: Option<tokio::time::Instant> = None;
 
                 // Serve commands until the link fails in a way we can't hide.
                 loop {
@@ -201,11 +228,50 @@ async fn supervise(
                         // to freeze and then fire everything at once.
                         _ = tokio::time::sleep_until(last_used + IDLE_BEFORE_REFRESH) => {
                             tracing::debug!(%addr, "refreshing an idle Apple TV session");
-                            match session::open_session(addr, port, &credentials).await {
+                            match connect(addr, port, &credentials, &keyboard).await {
                                 Ok(fresh) => link = fresh,
                                 Err(e) => tracing::debug!(%addr, error = %e, "idle refresh failed"),
                             }
                             last_used = tokio::time::Instant::now();
+                            continue;
+                        }
+                        _ = tokio::time::sleep(KEYBOARD_POLL),
+                            if last_command.is_some_and(|t| t.elapsed() < KEYBOARD_WATCH) =>
+                        {
+                            match session::start_text_input(&mut link).await {
+                                Ok(field) => {
+                                    keyboard.set(field);
+                                    // The check keeps the session warm, so
+                                    // there is nothing for a refresh to do —
+                                    // and replacing the session drops the
+                                    // Apple TV out of typing mode for a moment.
+                                    last_used = tokio::time::Instant::now();
+                                }
+                                Err(e) => {
+                                    tracing::debug!(%addr, error = %e, "keyboard check failed; reconnecting");
+                                    match connect(addr, port, &credentials, &keyboard).await {
+                                        Ok(fresh) => link = fresh,
+                                        Err(_) => break,
+                                    }
+                                    last_used = tokio::time::Instant::now();
+                                }
+                            }
+                            continue;
+                        }
+                        event = link.next_event() => {
+                            match event {
+                                Ok((identifier, content)) => keyboard.on_event(&identifier, &content),
+                                // The device hung up between presses. Replace
+                                // the link now, while nobody is waiting on it.
+                                Err(e) => {
+                                    tracing::debug!(%addr, error = %e, "idle Apple TV link closed");
+                                    match connect(addr, port, &credentials, &keyboard).await {
+                                        Ok(fresh) => link = fresh,
+                                        Err(_) => break,
+                                    }
+                                    last_used = tokio::time::Instant::now();
+                                }
+                            }
                             continue;
                         }
                         request = commands.recv() => match request {
@@ -215,7 +281,11 @@ async fn supervise(
                     };
 
                     // Shed a backlog rather than playing it out seconds late.
-                    if request.queued_at.elapsed() > STALE_AFTER {
+                    // Text is exempt: each one carries the whole field, so the
+                    // newest must land even if it waited.
+                    if request.queued_at.elapsed() > STALE_AFTER
+                        && !matches!(request.command, Command::Text(_))
+                    {
                         tracing::debug!(
                             command = request.command.describe(),
                             "dropping a command overtaken by newer input"
@@ -224,17 +294,17 @@ async fn supervise(
                         continue;
                     }
 
-                    let mut result = dispatch(&mut link, &request.command).await;
+                    let mut result = dispatch(&mut link, &request.command, &keyboard).await;
 
                     // One transparent retry on a link-level failure: the device
                     // reaps idle sessions, and a button press should not be lost
                     // to that.
                     if is_link_failure(&result) {
                         tracing::debug!(%addr, "link failed; reconnecting and retrying once");
-                        match session::open_session(addr, port, &credentials).await {
+                        match connect(addr, port, &credentials, &keyboard).await {
                             Ok(fresh) => {
                                 link = fresh;
-                                result = dispatch(&mut link, &request.command).await;
+                                result = dispatch(&mut link, &request.command, &keyboard).await;
                             }
                             Err(e) => result = Err(e),
                         }
@@ -242,12 +312,14 @@ async fn supervise(
 
                     let broke = is_link_failure(&result);
                     last_used = tokio::time::Instant::now();
+                    last_command = Some(last_used);
                     let _ = request.ack.send(result);
                     if broke {
                         tracing::warn!(%addr, "Apple TV link failed after a retry");
                         break;
                     }
                 }
+                keyboard.set(None);
                 set_reachable(&state, &events, false);
                 if commands.is_closed() {
                     return;
@@ -279,6 +351,98 @@ async fn supervise(
             return;
         }
         delay = (delay * 2).min(RECONNECT_DELAY_MAX);
+    }
+}
+
+/// Open a session and learn whether a text field is already focused.
+async fn connect(
+    addr: IpAddr,
+    port: Option<u16>,
+    credentials: &Credentials,
+    keyboard: &Keyboard<'_>,
+) -> Result<Link> {
+    let mut link = session::open_session(addr, port, credentials).await?;
+    // Typing is an extra. A device that won't discuss it can still be steered,
+    // so its refusal must not cost the session.
+    match session::start_text_input(&mut link).await {
+        Ok(field) => keyboard.set(field),
+        Err(e) => tracing::debug!(%addr, error = %e, "Apple TV declined text input"),
+    }
+    Ok(link)
+}
+
+/// Tracks whether the Apple TV has a text field waiting for input.
+struct Keyboard<'a> {
+    state: &'a Arc<Mutex<DeviceState>>,
+    events: &'a broadcast::Sender<DeviceEvent>,
+    /// The focused field, kept so typing can go straight to its session.
+    field: Mutex<Option<KnownField>>,
+}
+
+#[derive(Clone)]
+struct KnownField {
+    field: TextField,
+    /// Whether `field.text` is what we typed, rather than what the device
+    /// reported. Only then is it trustworthy enough to edit against.
+    typed: bool,
+}
+
+impl KnownField {
+    fn reported(field: TextField) -> Self {
+        Self { field, typed: false }
+    }
+}
+
+impl Keyboard<'_> {
+    fn on_event(&self, identifier: &str, content: &opack::Value) {
+        match identifier {
+            "_tiStarted" => match session::text_field(content) {
+                Ok(field) => self.set(field),
+                Err(e) => tracing::warn!(error = %e, "could not read the focused text field"),
+            },
+            "_tiStopped" => self.set(None),
+            other => tracing::debug!(identifier = other, "ignoring Apple TV event"),
+        }
+    }
+
+    fn field(&self) -> Option<KnownField> {
+        self.field.lock().unwrap().clone()
+    }
+
+    /// The device says this field is focused, or that none is.
+    fn set(&self, field: Option<TextField>) {
+        let mut known = self.field.lock().unwrap();
+        let ours = known
+            .as_ref()
+            .zip(field.as_ref())
+            .is_some_and(|(known, now)| known.typed && known.field.session == now.session);
+        // While we are typing into a field, what we typed stands; the device's
+        // account of the same field lags or is simply wrong.
+        if !ours {
+            *known = field.map(KnownField::reported);
+        }
+        let text = known.as_ref().map(|k| k.field.text.clone());
+        drop(known);
+        self.publish(text);
+    }
+
+    /// We have typed `field.text` into the field.
+    fn typed(&self, field: TextField) {
+        let text = Some(field.text.clone());
+        *self.field.lock().unwrap() = Some(KnownField { field, typed: true });
+        self.publish(text);
+    }
+
+    fn publish(&self, text: Option<String>) {
+        let changed = {
+            let mut guard = self.state.lock().unwrap();
+            let changed = guard.keyboard != text;
+            guard.keyboard = text.clone();
+            changed
+        };
+        if changed {
+            let _ = self.events.send(DeviceEvent::Keyboard(text));
+        }
     }
 }
 

@@ -105,6 +105,8 @@ pub enum Command {
     Input(String),
     Nav(NavKey),
     Transport(TransportKey),
+    /// Replace what the device's focused text field holds.
+    Text(String),
     /// Escape hatch: a raw protocol string, passed through untouched.
     Raw(String),
 }
@@ -118,6 +120,7 @@ impl Command {
             Command::Input(_) => "input",
             Command::Nav(_) => "navigation",
             Command::Transport(_) => "transport",
+            Command::Text(_) => "text",
             Command::Raw(_) => "raw",
         }
     }
@@ -133,6 +136,9 @@ pub struct DeviceState {
     pub volume: Option<f32>,
     pub muted: Option<bool>,
     pub input: Option<String>,
+    /// What the focused text field holds, or `None` when no field is focused
+    /// and there is nothing to type into.
+    pub keyboard: Option<String>,
 }
 
 /// A state change pushed by the device itself.
@@ -146,6 +152,8 @@ pub enum DeviceEvent {
     Volume(f32),
     Muted(bool),
     Input(String),
+    /// A text field gained focus (with its text) or lost it.
+    Keyboard(Option<String>),
     Reachability(bool),
 }
 

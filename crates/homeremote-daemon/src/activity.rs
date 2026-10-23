@@ -261,6 +261,7 @@ mod tests {
             volume: Some(0.5),
             muted: Some(false),
             input: Some("MPLAY".into()),
+            keyboard: None,
         }
     }
 

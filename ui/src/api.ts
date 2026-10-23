@@ -14,6 +14,8 @@ export type Command =
   | { input: string }
   | { nav: NavKey }
   | { transport: TransportKey }
+  /** Replaces what the focused text field holds. */
+  | { text: string }
   | { raw: string };
 
 export interface Capabilities {
@@ -30,6 +32,8 @@ export interface DeviceState {
   volume: number | null;
   muted: boolean | null;
   input: string | null;
+  /** The focused text field's contents, or null when none is focused. */
+  keyboard: string | null;
 }
 
 export interface InputOption {
@@ -73,6 +77,7 @@ export type DeviceEventPayload =
   | { volume: number }
   | { muted: boolean }
   | { input: string }
+  | { keyboard: string | null }
   | { reachability: boolean };
 
 /** Messages pushed over the WebSocket. */

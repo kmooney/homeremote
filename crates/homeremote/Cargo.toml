@@ -24,6 +24,7 @@ hkdf = "0.13.0"
 if-addrs = "0.15.0"
 mdns-sd = "0.21.1"
 num-bigint = "0.5.1"
+plist = "1.10.3"
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "charset", "http2"] }
 roxmltree = "0.21.1"

@@ -6,6 +6,7 @@ use crate::appletv::frame::FrameType;
 use crate::appletv::link::Link;
 use crate::appletv::opack::{Value, dict};
 use crate::appletv::pairing::{Credentials, PairSetup, PairVerify};
+use crate::appletv::rti::{self, TextField};
 use crate::appletv::tlv8::Tlv;
 use crate::appletv::{DEFAULT_PORT, frame};
 use crate::device::{NavKey, TransportKey};
@@ -256,6 +257,80 @@ pub async fn press(link: &mut Link, command: HidCommand) -> Result<()> {
     Ok(())
 }
 
+/// Ask about text input, and register for `_tiStarted`/`_tiStopped` events.
+///
+/// Returns the field focused right now, if any. Those events are meant to
+/// announce changes, but the Living Room Apple TV (tvOS, 2026) was never seen
+/// to send one, so this answer is what the remote actually relies on.
+///
+/// Safe to repeat on one session without a `_tiStop` in between, and each
+/// answer is current; stopping first would flash on the TV.
+pub async fn start_text_input(link: &mut Link) -> Result<Option<TextField>> {
+    let reply = link.command("_tiStart", Value::Dict(Default::default())).await?;
+    text_field(&reply)
+}
+
+/// The focused field described by a `_tiStart` reply or `_tiStarted` event.
+pub fn text_field(content: &Value) -> Result<Option<TextField>> {
+    match content.get("_tiD").and_then(Value::as_bytes) {
+        Some(archive) => rti::read_field(archive).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Make the field hold `text`.
+///
+/// `from` is what the field holds, if known. The device's own report can't
+/// be trusted for that — YouTube's search field reads as empty when you come
+/// back to it with a term still in it — so until something has been typed
+/// here, pass `None`: the field is then cleared before typing, rather than
+/// typing onto whatever is left in it.
+///
+/// Once the contents are known, changes go as an edit at the end — backspace
+/// over what differs, then type the rest. Clearing makes the Apple TV flash
+/// its keyboard hint, so it is kept to that first change.
+///
+/// Sent straight to the field's session, without restarting text input to
+/// look it up again, which flashes too.
+pub async fn set_text(
+    link: &mut Link,
+    session: &[u8],
+    from: Option<&str>,
+    text: &str,
+) -> Result<()> {
+    let (deletions, insertion) = match from {
+        Some(from) => edit_between(from, text),
+        None => {
+            send_text_operations(link, rti::clear(session)?).await?;
+            (0, text)
+        }
+    };
+    if deletions == 0 && insertion.is_empty() {
+        return Ok(());
+    }
+    send_text_operations(link, rti::edit(session, deletions, insertion)?).await
+}
+
+/// How many characters to delete from the end of `from`, and what to type
+/// after, to arrive at `to`.
+fn edit_between<'a>(from: &str, to: &'a str) -> (usize, &'a str) {
+    let shared = from
+        .char_indices()
+        .zip(to.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or(from.len().min(to.len()), |((at, _), _)| at);
+    // Everything before `shared` is identical, so it is a boundary in both.
+    (from[shared..].chars().count(), &to[shared..])
+}
+
+async fn send_text_operations(link: &mut Link, archive: Vec<u8>) -> Result<()> {
+    link.send_event(
+        "_tiC",
+        dict([("_tiV", Value::Int(1)), ("_tiD", Value::Bytes(archive))]),
+    )
+    .await
+}
+
 fn random_seed() -> [u8; 32] {
     let mut seed = [0u8; 32];
     for chunk in seed.chunks_mut(4) {
@@ -309,6 +384,18 @@ mod tests {
         assert_eq!(HidCommand::Select as i64, 6);
         assert_eq!(HidCommand::Home as i64, 7);
         assert_eq!(HidCommand::PlayPause as i64, 14);
+    }
+
+    #[test]
+    fn edits_type_only_what_changed_at_the_end() {
+        assert_eq!(edit_between("star", "star wars"), (0, " wars"));
+        assert_eq!(edit_between("star wars", "star war"), (1, ""));
+        assert_eq!(edit_between("star wars", "star trek"), (4, "trek"));
+        assert_eq!(edit_between("star", "star"), (0, ""));
+        assert_eq!(edit_between("star", ""), (4, ""));
+        assert_eq!(edit_between("", "hi"), (0, "hi"));
+        assert_eq!(edit_between("café", "cafe"), (1, "e"));
+        assert_eq!(edit_between("naïve", "naïvety"), (0, "ty"));
     }
 
     #[test]

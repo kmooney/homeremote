@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { Command, Device, NavKey, TransportKey } from "./api";
 import { Inputs } from "./Inputs";
 import { HoldButton, REPEAT_INTERVAL } from "./HoldButton";
+import { TextEntry } from "./TextEntry";
 
 /** Laptop keys that drive the Apple TV while the remote tab is open. */
 const KEY_COMMANDS: Record<string, Command> = {
@@ -27,7 +28,7 @@ interface Props {
   volumeDevice: Device | null;
   remoteDevice: Device | null;
   inputDevice: Device | null;
-  onSend: (deviceId: string, command: Command) => void;
+  onSend: (deviceId: string, command: Command) => Promise<void>;
 }
 
 export function Remote({ volumeDevice, remoteDevice, inputDevice, onSend }: Props) {
@@ -122,6 +123,13 @@ export function Remote({ volumeDevice, remoteDevice, inputDevice, onSend }: Prop
 
         {!remoteDevice && (
           <p className="empty">No device here handles navigation yet.</p>
+        )}
+
+        {remoteDevice?.state.keyboard != null && (
+          <TextEntry
+            text={remoteDevice.state.keyboard}
+            onChange={(text) => onSend(remoteDevice.id, { text })}
+          />
         )}
 
         <div className="dpad">

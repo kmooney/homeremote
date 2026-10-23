@@ -48,6 +48,7 @@ export function App() {
             if ("volume" in payload) state.volume = payload.volume;
             if ("muted" in payload) state.muted = payload.muted;
             if ("input" in payload) state.input = payload.input;
+            if ("keyboard" in payload) state.keyboard = payload.keyboard;
             if ("reachability" in payload) state.reachable = payload.reachability;
             return { ...device, state };
           }),

@@ -214,6 +214,7 @@ async fn discover(State(state): State<Arc<AppState>>) -> Result<Json<DevicesResp
 }
 
 async fn events(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+    tracing::debug!("event stream requested");
     ws.on_upgrade(move |socket| stream_events(socket, state))
 }
 
@@ -221,6 +222,7 @@ async fn events(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Res
 ///
 /// This is what keeps two phones and a laptop showing the same volume.
 async fn stream_events(mut socket: WebSocket, state: Arc<AppState>) {
+    tracing::debug!("event stream upgraded");
     let mut events = state.events.subscribe();
 
     // Send the current picture first, so a client that connects mid-film isn't
@@ -237,6 +239,7 @@ async fn stream_events(mut socket: WebSocket, state: Arc<AppState>) {
     {
         return;
     }
+    tracing::debug!("event stream sent its snapshot");
 
     loop {
         tokio::select! {

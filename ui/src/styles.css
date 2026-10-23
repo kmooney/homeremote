@@ -185,6 +185,17 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .dpad .ok { font-size: 15px; font-weight: 700; background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .dpad .spacer { visibility: hidden; }
 
+.text-entry {
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 12px;
+  font-size: 17px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  color: var(--text);
+}
+
 .row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
 .row + .row { margin-top: 8px; }
 

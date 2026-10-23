@@ -15,6 +15,7 @@ mod device;
 pub use device::AppleTv;
 pub mod pairing;
 pub mod opack;
+pub mod rti;
 pub mod tlv8;
 
 use std::time::Duration;

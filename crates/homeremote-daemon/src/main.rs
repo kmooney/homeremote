@@ -257,6 +257,8 @@ fn describe_event(event: &DeviceEvent) -> String {
         DeviceEvent::Volume(level) => format!("volume   {:.0}%", level * 100.0),
         DeviceEvent::Muted(muted) => format!("mute     {}", if *muted { "on" } else { "off" }),
         DeviceEvent::Input(input) => format!("input    {input}"),
+        DeviceEvent::Keyboard(Some(text)) => format!("keyboard {text:?}"),
+        DeviceEvent::Keyboard(None) => "keyboard closed".to_string(),
         DeviceEvent::Reachability(up) => {
             format!("device   {}", if *up { "reachable" } else { "unreachable" })
         }
@@ -279,6 +281,7 @@ async fn print_state(device: &dyn Device) {
     show("volume", state.volume.map(|v| format!("{:.0}%", v * 100.0)));
     show("mute", state.muted.map(|m| if m { "on".into() } else { "off".into() }));
     show("input", state.input);
+    show("keyboard", state.keyboard.map(|text| format!("{text:?}")));
 }
 
 fn init_tracing(verbose: bool) {

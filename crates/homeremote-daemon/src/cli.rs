@@ -110,6 +110,9 @@ pub fn parse_command(words: &[String]) -> Result<Command> {
             Ok(Command::Raw(rest.join(" ")))
         }
 
+        // Replaces whatever the focused field holds; no words clears it.
+        "text" => Ok(Command::Text(rest.join(" "))),
+
         other => bail!("unknown command {other:?}"),
     }
 }
